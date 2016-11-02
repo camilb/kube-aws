@@ -43,7 +43,7 @@ func newDefaultCluster() *Cluster {
 		PodCIDR:                  "10.2.0.0/16",
 		ServiceCIDR:              "10.3.0.0/24",
 		DNSServiceIP:             "10.3.0.10",
-		K8sVer:                   "v1.4.3_coreos.0",
+		K8sVer:                   "v1.4.5_coreos.0",
 		HyperkubeImageRepo:       "quay.io/coreos/hyperkube",
 		TLSCADurationDays:        365 * 10,
 		TLSCertDurationDays:      365,
@@ -67,6 +67,7 @@ func newDefaultCluster() *Cluster {
 		Subnets:                  []*Subnet{},
 		MapPublicIPs:             true,
 		Experimental:             experimental,
+		IsChinaRegion:            false,
 	}
 }
 
@@ -132,6 +133,7 @@ type Cluster struct {
 	Region                   string            `yaml:"region,omitempty"`
 	AvailabilityZone         string            `yaml:"availabilityZone,omitempty"`
 	ReleaseChannel           string            `yaml:"releaseChannel,omitempty"`
+	AmiId                    string            `yaml:"amiId,omitempty"`
 	ControllerCount          int               `yaml:"controllerCount,omitempty"`
 	ControllerInstanceType   string            `yaml:"controllerInstanceType,omitempty"`
 	ControllerRootVolumeType string            `yaml:"controllerRootVolumeType,omitempty"`
@@ -171,6 +173,7 @@ type Cluster struct {
 	MapPublicIPs             bool              `yaml:"mapPublicIPs,omitempty"`
 	Experimental             Experimental      `yaml:"experimental"`
 	providedEncryptService   encryptService
+	IsChinaRegion            bool
 }
 
 type Subnet struct {
@@ -225,9 +228,13 @@ func (c Cluster) Config() (*Config, error) {
 		}
 	}
 
-	var err error
-	if config.AMI, err = getAMI(config.Region, config.ReleaseChannel); err != nil {
-		return nil, fmt.Errorf("failed getting AMI for config: %v", err)
+	if c.AmiId == "" {
+		var err error
+		if config.AMI, err = getAMI(config.Region, config.ReleaseChannel); err != nil {
+			return nil, fmt.Errorf("failed getting AMI for config: %v", err)
+		}
+	} else {
+		config.AMI = c.AmiId
 	}
 
 	//Set logical name constants
@@ -312,6 +319,8 @@ func (c Cluster) Config() (*Config, error) {
 	}
 	config.EtcdEndpoints = etcdEndpoints.String()
 	config.EtcdInitialCluster = etcdInitialCluster.String()
+
+	config.IsChinaRegion = strings.HasPrefix(config.Region, "cn")
 
 	return &config, nil
 }
