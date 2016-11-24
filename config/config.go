@@ -34,6 +34,13 @@ func newDefaultCluster() *Cluster {
 		NodeDrainer{
 			Enabled: false,
 		},
+		AwsEnvironment{
+			Enabled: false,
+		},
+		WaitSignal{
+			Enabled:      false,
+			MaxBatchSize: 1,
+		},
 	}
 
 	return &Cluster{
@@ -45,15 +52,19 @@ func newDefaultCluster() *Cluster {
 		DNSServiceIP:             "10.3.0.10",
 		K8sVer:                   "v1.4.6_coreos.0",
 		HyperkubeImageRepo:       "quay.io/coreos/hyperkube",
+		AWSCliImageRepo:          "quay.io/coreos/awscli",
+		AWSCliTag:                "master",
 		TLSCADurationDays:        365 * 10,
 		TLSCertDurationDays:      365,
 		ContainerRuntime:         "docker",
 		ControllerCount:          1,
+		ControllerCreateTimeout:  "PT15M",
 		ControllerInstanceType:   "m3.medium",
 		ControllerRootVolumeType: "gp2",
 		ControllerRootVolumeIOPS: 0,
 		ControllerRootVolumeSize: 30,
 		WorkerCount:              1,
+		WorkerCreateTimeout:      "PT15M",
 		WorkerInstanceType:       "m3.medium",
 		WorkerRootVolumeType:     "gp2",
 		WorkerRootVolumeIOPS:     0,
@@ -135,11 +146,13 @@ type Cluster struct {
 	ReleaseChannel           string            `yaml:"releaseChannel,omitempty"`
 	AmiId                    string            `yaml:"amiId,omitempty"`
 	ControllerCount          int               `yaml:"controllerCount,omitempty"`
+	ControllerCreateTimeout  string            `yaml:"controllerCreateTimeout,omitempty"`
 	ControllerInstanceType   string            `yaml:"controllerInstanceType,omitempty"`
 	ControllerRootVolumeType string            `yaml:"controllerRootVolumeType,omitempty"`
 	ControllerRootVolumeIOPS int               `yaml:"controllerRootVolumeIOPS,omitempty"`
 	ControllerRootVolumeSize int               `yaml:"controllerRootVolumeSize,omitempty"`
 	WorkerCount              int               `yaml:"workerCount,omitempty"`
+	WorkerCreateTimeout      string            `yaml:"workerCreateTimeout,omitempty"`
 	WorkerInstanceType       string            `yaml:"workerInstanceType,omitempty"`
 	WorkerRootVolumeType     string            `yaml:"workerRootVolumeType,omitempty"`
 	WorkerRootVolumeIOPS     int               `yaml:"workerRootVolumeIOPS,omitempty"`
@@ -159,6 +172,8 @@ type Cluster struct {
 	DNSServiceIP             string            `yaml:"dnsServiceIP,omitempty"`
 	K8sVer                   string            `yaml:"kubernetesVersion,omitempty"`
 	HyperkubeImageRepo       string            `yaml:"hyperkubeImageRepo,omitempty"`
+	AWSCliImageRepo          string            `yaml:"awsCliImageRepo,omitempty"`
+	AWSCliTag                string            `yaml:"awsCliTag,omitempty"`
 	ContainerRuntime         string            `yaml:"containerRuntime,omitempty"`
 	KMSKeyARN                string            `yaml:"kmsKeyArn,omitempty"`
 	CreateRecordSet          bool              `yaml:"createRecordSet,omitempty"`
@@ -172,6 +187,7 @@ type Cluster struct {
 	Subnets                  []*Subnet         `yaml:"subnets,omitempty"`
 	MapPublicIPs             bool              `yaml:"mapPublicIPs,omitempty"`
 	ElasticFileSystemID      string            `yaml:"elasticFileSystemId,omitempty"`
+	SSHAuthorizedKeys        []string          `yaml:"sshAuthorizedKeys,omitempty"`
 	Experimental             Experimental      `yaml:"experimental"`
 	providedEncryptService   encryptService
 	IsChinaRegion            bool
@@ -184,11 +200,23 @@ type Subnet struct {
 }
 
 type Experimental struct {
-	NodeDrainer NodeDrainer `yaml:"nodeDrainer"`
+	NodeDrainer    NodeDrainer    `yaml:"nodeDrainer"`
+	AwsEnvironment AwsEnvironment `yaml:"awsEnvironment"`
+	WaitSignal     WaitSignal     `yaml:"waitSignal"`
 }
 
 type NodeDrainer struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+type AwsEnvironment struct {
+	Enabled     bool              `yaml:"enabled"`
+	Environment map[string]string `yaml:"environment"`
+}
+
+type WaitSignal struct {
+	Enabled      bool `yaml:"enabled"`
+	MaxBatchSize int  `yaml:"maxBatchSize"`
 }
 
 const (

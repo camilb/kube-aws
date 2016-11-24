@@ -2,7 +2,6 @@
 coreos:
   update:
     reboot-strategy: "off"
-
   flannel:
     interface: $private_ipv4
     etcd_endpoints: {{ .EtcdEndpoints }}
@@ -11,6 +10,31 @@ coreos:
     etcd_keyfile: /etc/kubernetes/ssl/etcd-client-key.pem
 
   units:
+{{if .Experimental.AwsEnvironment.Enabled}}
+    - name: set-aws-environment.service
+      enable: true
+      command: start
+      runtime: true
+      content: |
+        [Unit]
+        Description=Set AWS environment variables in /etc/aws-environment
+        After=network-online.target
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=true
+        ExecStartPre=/bin/touch /etc/aws-environment
+        ExecStart=/usr/bin/rkt run \
+          --uuid-file-save=/var/run/coreos/cfn-init.uuid \
+          --volume=dns,kind=host,source=/etc/resolv.conf,readOnly=true --mount volume=dns,target=/etc/resolv.conf \
+          --volume=awsenv,kind=host,source=/etc/aws-environment,readOnly=false --mount volume=awsenv,target=/etc/aws-environment \
+          --net=host \
+          --trust-keys-from-https \
+          {{.AWSCliImageRepo}}:{{.AWSCliTag}} -- cfn-init -v \
+              --region {{.Region}} \
+              --resource LaunchConfigurationController \
+              --stack {{.ClusterName}}
+{{end}}
     - name: docker.service
       drop-ins:
         - name: 40-flannel.conf
@@ -161,6 +185,7 @@ coreos:
         [Service]
         Type=simple
         StartLimitInterval=0
+        RestartSec=10
         Restart=on-failure
         ExecStartPre=/usr/bin/systemctl is-active kubelet.service
         ExecStartPre=/usr/bin/systemctl is-active docker.service
@@ -178,6 +203,7 @@ coreos:
         [Service]
         Type=simple
         StartLimitInterval=0
+        RestartSec=10
         Restart=on-failure
         ExecStartPre=/usr/bin/systemctl is-active kubelet.service
         ExecStartPre=/usr/bin/systemctl is-active docker.service
@@ -205,6 +231,37 @@ coreos:
         WantedBy=kubelet.service
 {{ end }}
 
+{{if .Experimental.WaitSignal.Enabled}}
+    - name: cfn-signal.service
+      command: start
+      content: |
+        [Unit]
+        Wants=kubelet.service docker.service
+        After=kubelet.service
+
+        [Service]
+        Type=oneshot
+        ExecStartPre=/usr/bin/bash -c "while sleep 1; do if /usr/bin/curl -s -m 20 -f  http://127.0.0.1:8080/healthz > /dev/null &&  /usr/bin/curl -s -m 20 -f  http://127.0.0.1:10252/healthz > /dev/null && /usr/bin/curl -s -m 20 -f  http://127.0.0.1:10251/healthz > /dev/null &&  /usr/bin/curl --insecure -s -m 20 -f  https://127.0.0.1:10250/healthz > /dev/null ; then break ; fi;  done"
+        {{ if .UseCalico }}
+        ExecStartPre=/usr/bin/systemctl is-active calico-node
+        {{ end }}
+        ExecStart=/usr/bin/rkt run \
+          --uuid-file-save=/var/run/coreos/cfn-signal.uuid \
+          --volume=dns,kind=host,source=/etc/resolv.conf,readOnly=true --mount volume=dns,target=/etc/resolv.conf \
+          --net=host \
+          --trust-keys-from-https \
+          quay.io/coreos/awscli:edge -- cfn-signal -e 0 \
+              --region {{.Region}} \
+              --resource AutoScaleController \
+              --stack {{.ClusterName}}
+{{end}}
+
+{{if .SSHAuthorizedKeys}}
+ssh_authorized_keys:
+  {{range $sshkey := .SSHAuthorizedKeys}}
+  - {{$sshkey}}
+  {{end}}
+{{end}}
 
 write_files:
   - path: /opt/bin/install-kube-system
@@ -267,26 +324,34 @@ write_files:
     content: |
       #!/bin/bash -e
 
-      for encKey in $(find /etc/kubernetes/ssl/*.pem.enc);do
-        sudo rkt run \
+      sudo rkt run \
         --volume=ssl,kind=host,source=/etc/kubernetes/ssl,readOnly=false \
         --mount=volume=ssl,target=/etc/kubernetes/ssl \
         --uuid-file-save=/var/run/coreos/decrypt-tls-assets.uuid \
         --volume=dns,kind=host,source=/etc/resolv.conf,readOnly=true --mount volume=dns,target=/etc/resolv.conf \
         --net=host \
         --trust-keys-from-https \
-        quay.io/coreos/awscli --exec=/bin/bash -- \
+        {{.AWSCliImageRepo}}:{{.AWSCliTag}} --exec=/bin/bash -- \
           -c \
-          "/usr/bin/aws \
-            --region {{.Region}} kms decrypt \
-            --ciphertext-blob fileb://$encKey \
-            --output text \
-            --query Plaintext \
-            > $encKey.b64"
+          'echo decrypting tls assets; \
+           for encKey in $(find /etc/kubernetes/ssl/*.pem.enc); do \
+             echo decrypting $encKey to $encKey.b64; \
+             /usr/bin/aws \
+               --region {{.Region}} kms decrypt \
+               --ciphertext-blob fileb://$encKey \
+               --output text \
+               --query Plaintext \
+               > $encKey.b64; \
+           done; \
+           echo done.'
 
+      sudo rkt rm --uuid-file=/var/run/coreos/decrypt-tls-assets.uuid
+
+      echo base64 decoding decrypted tls assets
+      for encKey in $(find /etc/kubernetes/ssl/*.pem.enc);do
         base64 --decode < $encKey.b64 > ${encKey%.enc}
-        sudo rkt rm --uuid-file=/var/run/coreos/decrypt-tls-assets.uuid
       done
+      echo done.
 
   - path: /etc/kubernetes/manifests/kube-proxy.yaml
     content: |
