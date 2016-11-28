@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"fmt"
@@ -20,13 +20,15 @@ var (
 
 	upOpts = struct {
 		awsDebug, export bool
+		s3URI            string
 	}{}
 )
 
 func init() {
-	cmdRoot.AddCommand(cmdUp)
+	RootCmd.AddCommand(cmdUp)
 	cmdUp.Flags().BoolVar(&upOpts.export, "export", false, "Don't create cluster, instead export cloudformation stack file")
 	cmdUp.Flags().BoolVar(&upOpts.awsDebug, "aws-debug", false, "Log debug information from aws-sdk-go library")
+	cmdUp.Flags().StringVar(&upOpts.s3URI, "s3-uri", "", "When your template is bigger than the cloudformation limit of 51200 bytes, upload the template to the specified location in S3. S3 location expressed as s3://<bucket>/path/to/dir")
 }
 
 func runCmdUp(cmd *cobra.Command, args []string) error {
@@ -58,7 +60,7 @@ func runCmdUp(cmd *cobra.Command, args []string) error {
 
 	cluster := cluster.New(conf, upOpts.awsDebug)
 	fmt.Printf("Creating AWS resources. This should take around 5 minutes.\n")
-	if err := cluster.Create(string(data)); err != nil {
+	if err := cluster.Create(string(data), upOpts.s3URI); err != nil {
 		return fmt.Errorf("Error creating cluster: %v", err)
 	}
 

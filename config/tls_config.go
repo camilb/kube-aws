@@ -1,20 +1,19 @@
 package config
 
 import (
-	"bytes"
-	"compress/gzip"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/base64"
 	"fmt"
-	"io/ioutil"
 	"net"
-	"path/filepath"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/kms"
+	"github.com/coreos/kube-aws/gzipcompressor"
+	"github.com/coreos/kube-aws/netutil"
 	"github.com/coreos/kube-aws/tlsutil"
+	"io/ioutil"
+	"path/filepath"
 )
 
 // PEM encoded TLS assets.
@@ -90,7 +89,7 @@ func (c *Cluster) NewTLSAssets(caKey *rsa.PrivateKey, caCert *x509.Certificate) 
 	if err != nil {
 		return nil, fmt.Errorf("invalid serviceCIDR: %v", err)
 	}
-	kubernetesServiceIPAddr := incrementIP(serviceNet.IP)
+	kubernetesServiceIPAddr := netutil.IncrementIP(serviceNet.IP)
 
 	apiServerConfig := tlsutil.ServerCertConfig{
 		CommonName: "kube-apiserver",
@@ -238,23 +237,11 @@ func (r *RawTLSAssets) WriteToDir(dirname string, includeCAKey bool) error {
 	return nil
 }
 
-func compressData(d []byte) (string, error) {
-	var buff bytes.Buffer
-	gzw := gzip.NewWriter(&buff)
-	if _, err := gzw.Write(d); err != nil {
-		return "", err
-	}
-	if err := gzw.Close(); err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(buff.Bytes()), nil
-}
-
-type encryptService interface {
+type EncryptService interface {
 	Encrypt(*kms.EncryptInput) (*kms.EncryptOutput, error)
 }
 
-func (r *RawTLSAssets) compact(cfg *Config, kmsSvc encryptService) (*CompactTLSAssets, error) {
+func (r *RawTLSAssets) Compact(kMSKeyARN string, kmsSvc EncryptService) (*CompactTLSAssets, error) {
 	var err error
 	compact := func(data []byte) string {
 		if err != nil {
@@ -262,7 +249,7 @@ func (r *RawTLSAssets) compact(cfg *Config, kmsSvc encryptService) (*CompactTLSA
 		}
 
 		encryptInput := kms.EncryptInput{
-			KeyId:     aws.String(cfg.KMSKeyARN),
+			KeyId:     aws.String(kMSKeyARN),
 			Plaintext: data,
 		}
 
@@ -273,7 +260,7 @@ func (r *RawTLSAssets) compact(cfg *Config, kmsSvc encryptService) (*CompactTLSA
 		data = encryptOutput.CiphertextBlob
 
 		var out string
-		if out, err = compressData(data); err != nil {
+		if out, err = gzipcompressor.CompressData(data); err != nil {
 			return ""
 		}
 		return out

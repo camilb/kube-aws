@@ -3,12 +3,10 @@ package cluster
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -18,6 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/elb"
 	"github.com/aws/aws-sdk-go/service/route53"
 
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/coreos/kube-aws/cfnstack"
 	"github.com/coreos/kube-aws/config"
 )
 
@@ -61,18 +61,8 @@ type Cluster struct {
 	session *session.Session
 }
 
-func (c *Cluster) ValidateStack(stackBody string) (string, error) {
-	validateInput := cloudformation.ValidateTemplateInput{
-		TemplateBody: &stackBody,
-	}
-
-	cfSvc := cloudformation.New(c.session)
-	validationReport, err := cfSvc.ValidateTemplate(&validateInput)
-	if err != nil {
-		return "", fmt.Errorf("invalid cloudformation stack: %v", err)
-	}
-
-	return validationReport.String(), nil
+func (c *Cluster) ValidateStack(stackBody string, s3URI string) (string, error) {
+	return c.stackProvisioner().Validate(stackBody, s3URI)
 }
 
 type ec2Service interface {
@@ -140,7 +130,28 @@ func (c *Cluster) validateExistingVPCState(ec2Svc ec2Service) error {
 	return nil
 }
 
-func (c *Cluster) Create(stackBody string) error {
+func (c *Cluster) stackProvisioner() *cfnstack.Provisioner {
+	stackPolicyBody := `{
+  "Statement" : [
+    {
+      "Effect" : "Deny",
+      "Action" : "Update:*",
+      "Principal" : "*",
+      "Resource" : "LogicalResourceId/InstanceEtcd*"
+    },
+    {
+       "Effect" : "Allow",
+       "Principal" : "*",
+       "Action" : "Update:*",
+       "Resource" : "*"
+     }
+  ]
+}
+`
+	return cfnstack.NewProvisioner(c.ClusterName, c.StackTags, stackPolicyBody, c.session)
+}
+
+func (c *Cluster) Create(stackBody string, s3URI string) error {
 	r53Svc := route53.New(c.session)
 	if err := c.validateDNSConfig(r53Svc); err != nil {
 		return err
@@ -164,92 +175,9 @@ func (c *Cluster) Create(stackBody string) error {
 	}
 
 	cfSvc := cloudformation.New(c.session)
-	resp, err := c.createStack(cfSvc, stackBody)
-	if err != nil {
-		return err
-	}
+	s3Svc := s3.New(c.session)
 
-	req := cloudformation.DescribeStacksInput{
-		StackName: resp.StackId,
-	}
-
-	for {
-		resp, err := cfSvc.DescribeStacks(&req)
-		if err != nil {
-			return err
-		}
-		if len(resp.Stacks) == 0 {
-			return fmt.Errorf("stack not found")
-		}
-		statusString := aws.StringValue(resp.Stacks[0].StackStatus)
-		switch statusString {
-		case cloudformation.ResourceStatusCreateComplete:
-			return nil
-		case cloudformation.ResourceStatusCreateFailed:
-			errMsg := fmt.Sprintf(
-				"Stack creation failed: %s : %s",
-				statusString,
-				aws.StringValue(resp.Stacks[0].StackStatusReason),
-			)
-			errMsg = errMsg + "\n\nPrinting the most recent failed stack events:\n"
-
-			stackEventsOutput, err := cfSvc.DescribeStackEvents(
-				&cloudformation.DescribeStackEventsInput{
-					StackName: resp.Stacks[0].StackName,
-				})
-			if err != nil {
-				return err
-			}
-			errMsg = errMsg + strings.Join(stackEventErrMsgs(stackEventsOutput.StackEvents), "\n")
-			return errors.New(errMsg)
-		case cloudformation.ResourceStatusCreateInProgress:
-			time.Sleep(3 * time.Second)
-			continue
-		default:
-			return fmt.Errorf("unexpected stack status: %s", statusString)
-		}
-	}
-}
-
-type cloudformationService interface {
-	CreateStack(*cloudformation.CreateStackInput) (*cloudformation.CreateStackOutput, error)
-}
-
-func (c *Cluster) createStack(cfSvc cloudformationService, stackBody string) (*cloudformation.CreateStackOutput, error) {
-
-	var tags []*cloudformation.Tag
-	for k, v := range c.StackTags {
-		key := k
-		value := v
-		tags = append(tags, &cloudformation.Tag{Key: &key, Value: &value})
-	}
-
-	creq := &cloudformation.CreateStackInput{
-		StackName:    aws.String(c.ClusterName),
-		OnFailure:    aws.String(cloudformation.OnFailureDoNothing),
-		Capabilities: []*string{aws.String(cloudformation.CapabilityCapabilityIam)},
-		TemplateBody: &stackBody,
-		Tags:         tags,
-		StackPolicyBody: aws.String(`{
-  "Statement" : [
-    {
-      "Effect" : "Deny",
-      "Action" : "Update:*",
-      "Principal" : "*",
-      "Resource" : "LogicalResourceId/InstanceEtcd*"
-    },
-    {
-       "Effect" : "Allow",
-       "Principal" : "*",
-       "Action" : "Update:*",
-       "Resource" : "*"
-     }
-  ]
-}
-`),
-	}
-
-	return cfSvc.CreateStack(creq)
+	return c.stackProvisioner().CreateStackAndWait(cfSvc, s3Svc, stackBody, s3URI)
 }
 
 /*
@@ -320,48 +248,18 @@ func (c *Cluster) lockEtcdResources(cfSvc *cloudformation.CloudFormation, stackB
 	return buf.String(), nil
 }
 
-func (c *Cluster) Update(stackBody string) (string, error) {
-
+func (c *Cluster) Update(stackBody string, s3URI string) (string, error) {
 	cfSvc := cloudformation.New(c.session)
+	s3Svc := s3.New(c.session)
+
 	var err error
 	if stackBody, err = c.lockEtcdResources(cfSvc, stackBody); err != nil {
 		return "", err
 	}
-	input := &cloudformation.UpdateStackInput{
-		Capabilities: []*string{aws.String(cloudformation.CapabilityCapabilityIam)},
-		StackName:    aws.String(c.ClusterName),
-		TemplateBody: aws.String(stackBody),
-	}
 
-	updateOutput, err := cfSvc.UpdateStack(input)
-	if err != nil {
-		return "", fmt.Errorf("error updating cloudformation stack: %v", err)
-	}
-	req := cloudformation.DescribeStacksInput{
-		StackName: updateOutput.StackId,
-	}
-	for {
-		resp, err := cfSvc.DescribeStacks(&req)
-		if err != nil {
-			return "", err
-		}
-		if len(resp.Stacks) == 0 {
-			return "", fmt.Errorf("stack not found")
-		}
-		statusString := aws.StringValue(resp.Stacks[0].StackStatus)
-		switch statusString {
-		case cloudformation.ResourceStatusUpdateComplete:
-			return updateOutput.String(), nil
-		case cloudformation.ResourceStatusUpdateFailed, cloudformation.StackStatusUpdateRollbackComplete, cloudformation.StackStatusUpdateRollbackFailed:
-			errMsg := fmt.Sprintf("Stack status: %s : %s", statusString, aws.StringValue(resp.Stacks[0].StackStatusReason))
-			return "", errors.New(errMsg)
-		case cloudformation.ResourceStatusUpdateInProgress, cloudformation.StackStatusUpdateCompleteCleanupInProgress:
-			time.Sleep(3 * time.Second)
-			continue
-		default:
-			return "", fmt.Errorf("unexpected stack status: %s", statusString)
-		}
-	}
+	updateOutput, err := c.stackProvisioner().UpdateStackAndWait(cfSvc, s3Svc, stackBody, s3URI)
+
+	return updateOutput, err
 }
 
 func (c *Cluster) Info() (*Info, error) {
@@ -514,28 +412,6 @@ func (c *Cluster) validateDNSConfig(r53 r53Service) error {
 	}
 
 	return nil
-}
-
-func stackEventErrMsgs(events []*cloudformation.StackEvent) []string {
-	var errMsgs []string
-
-	for _, event := range events {
-		if aws.StringValue(event.ResourceStatus) == cloudformation.ResourceStatusCreateFailed {
-			// Only show actual failures, not cancelled dependent resources.
-			if aws.StringValue(event.ResourceStatusReason) != "Resource creation cancelled" {
-				errMsgs = append(errMsgs,
-					strings.TrimSpace(
-						strings.Join([]string{
-							aws.StringValue(event.ResourceStatus),
-							aws.StringValue(event.ResourceType),
-							aws.StringValue(event.LogicalResourceId),
-							aws.StringValue(event.ResourceStatusReason),
-						}, " ")))
-			}
-		}
-	}
-
-	return errMsgs
 }
 
 func isSubdomain(sub, parent string) bool {

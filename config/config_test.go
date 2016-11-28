@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"github.com/coreos/kube-aws/netutil"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"net"
@@ -198,7 +199,7 @@ dnsServiceIP: 10.6.142.100
 			continue
 		}
 
-		kubernetesServiceIP := incrementIP(serviceNet.IP)
+		kubernetesServiceIP := netutil.IncrementIP(serviceNet.IP)
 		if kubernetesServiceIP.String() != testConfig.KubernetesServiceIP {
 			t.Errorf("KubernetesServiceIP mismatch: got %s, expected %s",
 				kubernetesServiceIP,
@@ -727,7 +728,7 @@ nodeDrainer:
 }
 
 func newMinimalConfig() (*Config, error) {
-	cluster := newDefaultCluster()
+	cluster := NewDefaultCluster()
 	cluster.ExternalDNSName = "k8s.example.com"
 	cluster.Region = "us-west-1"
 	cluster.Subnets = []*Subnet{
@@ -870,7 +871,7 @@ func TestValidateExistingVPC(t *testing.T) {
 		{"10.1.0.0/16", []string{"1o.1.1.o/24", "10.1.2.0/24"}},
 	}
 
-	cluster := newDefaultCluster()
+	cluster := NewDefaultCluster()
 
 	cluster.VPCCIDR = "10.0.0.0/16"
 	cluster.Subnets = []*Subnet{

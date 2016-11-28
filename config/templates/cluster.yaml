@@ -37,6 +37,10 @@ externalDNSName: {{.ExternalDNSName}}
 # account being used to deploy this cluster.
 keyName: {{.KeyName}}
 
+# Additional keys to preload on the coreos account (keep this to a minimum)
+# sshAuthorizedKeys:
+# - "ssh-rsa AAAAEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEYEXAMPLEKEY example@example.org"
+
 # Region to provision Kubernetes cluster
 region: {{.Region}}
 
@@ -48,6 +52,9 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 
 # Number of controller nodes to create
 #controllerCount: 1
+
+# Maximum time to wait for controller creation
+#controlerCreateTimeout: PT15M
 
 # Instance type for controller node
 #controllerInstanceType: m3.medium
@@ -63,6 +70,9 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 
 # Number of worker nodes to create
 #workerCount: 1
+
+# Maximum time to wait for worker creation
+#workerCreateTimeout: PT15M
 
 # Instance type for worker nodes
 #workerInstanceType: m3.medium
@@ -143,10 +153,16 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 #tlsCertDurationDays: 365
 
 # Version of hyperkube image to use. This is the tag for the hyperkube image repository.
-# kubernetesVersion: v1.4.5_coreos.0
+# kubernetesVersion: v1.4.6_coreos.0
 
 # Hyperkube image repository to use.
 # hyperkubeImageRepo: quay.io/coreos/hyperkube
+
+# AWS CLI image repository to use.
+# awsCliImageRepo: quay.io/coreos/awscli
+
+# AWS CLI image tag to use.
+# awsCliTag: master
 
 # Use Calico for network policy.
 # useCalico: false
@@ -165,8 +181,23 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 # experimental:
 #   nodeDrainer:
 #     enabled: true
+#   nodeLabel:
+#     enabled: true
+#   awsEnvironment:
+#     enabled: true
+#     environment:
+#       CFNSTACK: '{ "Ref" : "AWS::StackId" }'
+#   waitSignal:
+#     enabled: true
+#   # This option has not yet been tested with rkt as container runtime
+#   ephemeralImageStorage:
+#     enabled: true
+#   loadBalancer:
+#     enabled: true
+#     names: [ "manuallymanagedelb" ]
+#     securityGroupIds: [ "sg-87654321" ]
 
-# AWS Tags for cloudformation stack resources 
+# AWS Tags for cloudformation stack resources
 #stackTags:
 #  Name: "Kubernetes"
 #  Environment: "Production"
