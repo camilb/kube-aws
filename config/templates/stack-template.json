@@ -9,7 +9,7 @@
     }
   },
   "Resources": {
-    "AutoScaleWorker": {
+    "{{.Worker.LogicalName}}": {
       "Properties": {
         "AvailabilityZones": [
           {{range $index, $subnet := .Subnets}}
@@ -87,9 +87,44 @@
           {{end}}
         }
       },
-      "DependsOn" : ["AutoScaleController"]
+      "Metadata" : {
+        "AWS::CloudFormation::Init" : {
+          "configSets" : {
+              "etcd-client": [ "etcd-client-env" ]{{if .Experimental.AwsEnvironment.Enabled}},
+              "aws-environment": [ "aws-environment-env" ]{{end}}
+          },
+          {{ if .Experimental.AwsEnvironment.Enabled }}
+          "aws-environment-env" : {
+            "commands": {
+              "write-environment": {
+                "command": { "Fn::Join" : ["", [ "echo '",
+                  {{range $variable, $function := .Experimental.AwsEnvironment.Environment}}
+                  "{{$variable}}=", {{$function}} , "\n",
+                  {{end}}
+                  "' > /etc/aws-environment" ] ] }
+              }
+            }
+          },
+          {{ end }}
+          "etcd-client-env": {
+            "files" : {
+              "/var/run/coreos/etcd-environment": {
+                "content": { "Fn::Join" : [ "", [
+                  "ETCD_ENDPOINTS='",
+{{range $index, $_ := $.EtcdInstances}}
+                  {{if $index}}",", {{end}} "https://",
+                    { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] }, ":2379",
+{{end}}
+                  "'\n"
+                ]]}
+              }
+            }
+          }
+        }
+      },
+      "DependsOn" : ["{{.Controller.LogicalName}}"]
     },
-    "AutoScaleController": {
+    "{{.Controller.LogicalName}}": {
       "Type": "AWS::AutoScaling::AutoScalingGroup",
       "Properties": {
         "AvailabilityZones": [
@@ -154,6 +189,59 @@
           {{else}}
           "PauseTime": "PT2M"
           {{end}}
+        }
+      },
+      "Metadata" : {
+        "AWS::CloudFormation::Init" : {
+          "configSets" : {
+              "etcd-server": [ "etcd-server-env" ],
+              "etcd-client": [ "etcd-client-env" ]{{if .Experimental.AwsEnvironment.Enabled}},
+              "aws-environment": [ "aws-environment-env" ]{{end}}
+          },
+          {{ if .Experimental.AwsEnvironment.Enabled }}
+          "aws-environment-env" : {
+            "commands": {
+              "write-environment": {
+                "command": { "Fn::Join" : ["", [ "echo '",
+                  {{range $variable, $function := .Experimental.AwsEnvironment.Environment}}
+                  "{{$variable}}=", {{$function}} , "\n",
+                  {{end}}
+                  "' > /etc/aws-environment" ] ] }
+              }
+            }
+          },
+          {{ end }}
+          "etcd-server-env": {
+            "files" : {
+              "/var/run/coreos/etcd-environment": {
+                "content": { "Fn::Join" : [ "", [
+                  "ETCD_INITIAL_CLUSTER='",
+                  {{range $index, $_ := $.EtcdInstances}}
+                  {{if $index}}",", {{end}}
+                  { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] },
+                  "=https://",
+                  { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] },
+                  ":2380",
+                  {{end}}
+                  "'\n"
+                ]]}
+              }
+            }
+          },
+          "etcd-client-env": {
+            "files" : {
+              "/var/run/coreos/etcd-environment": {
+                "content": { "Fn::Join" : [ "", [
+                  "ETCD_ENDPOINTS='",
+{{range $index, $_ := $.EtcdInstances}}
+                  {{if $index}}",", {{end}} "https://",
+                    { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] }, ":2379",
+{{end}}
+                  "'\n"
+                ]]}
+              }
+            }
+          }
         }
       }
     },
@@ -262,11 +350,13 @@
                   "Resource": [ "*" ]
                 },
                 {{end}}
+                {{if .ManageCertificates}}
                 {
                   "Action" : "kms:Decrypt",
                   "Effect" : "Allow",
                   "Resource" : "{{.KMSKeyARN}}"
                 },
+                {{end}}
                 {
                   "Action": [
                     "ecr:GetAuthorizationToken",
@@ -327,11 +417,13 @@
                   "Effect": "Allow",
                   "Resource": "*"
                 },
+                {{if .ManageCertificates}}
                 {
                   "Action" : "kms:Decrypt",
                   "Effect" : "Allow",
                   "Resource" : "{{.KMSKeyARN}}"
                 },
+                {{end}}
                 {{if .Experimental.WaitSignal.Enabled}}
                 {
                   "Action": "cloudformation:SignalResource",
@@ -397,6 +489,7 @@
         },
         "Path": "/",
         "Policies": [
+          {{if .ManageCertificates}}
           {
             "PolicyDocument": {
               "Statement": [
@@ -410,11 +503,26 @@
             },
             "PolicyName": "root"
           }
+          {{end}}
         ]
       },
+
       "Type": "AWS::IAM::Role"
     },
     {{range $etcdIndex, $etcdInstance := .EtcdInstances}}
+    "InstanceEtcd{{$etcdIndex}}eni": {
+      "Properties": {
+          "SubnetId": {
+            "Ref": "Subnet{{$etcdInstance.SubnetIndex}}"
+          },
+          "GroupSet": [
+            {
+              "Ref": "SecurityGroupEtcd"
+            }
+          ]
+      },
+      "Type": "AWS::EC2::NetworkInterface"
+    },
     "InstanceEtcd{{$etcdIndex}}": {
       "Properties": {
         "BlockDeviceMappings": [
@@ -448,21 +556,11 @@
         },
         "ImageId": "{{$.AMI}}",
         "InstanceType": "{{$.EtcdInstanceType}}",
-        "KeyName": "{{$.KeyName}}",
+        {{if $.KeyName}}"KeyName": "{{$.KeyName}}",{{end}}
         "NetworkInterfaces": [
           {
-            "AssociatePublicIpAddress": {{$.MapPublicIPs}},
-            "DeleteOnTermination": true,
-            "DeviceIndex": "0",
-            "GroupSet": [
-              {
-                "Ref": "SecurityGroupEtcd"
-              }
-            ],
-            "PrivateIpAddress": "{{$etcdInstance.IPAddress}}",
-            "SubnetId": {
-              "Ref": "Subnet{{$etcdInstance.SubnetIndex}}"
-            }
+            "NetworkInterfaceId": { "Ref": "InstanceEtcd{{$etcdIndex}}eni" },
+            "DeviceIndex": "0"
           }
         ],
         "Tags": [
@@ -500,7 +598,7 @@
         },
         "ImageId": "{{.AMI}}",
         "InstanceType": "{{.WorkerInstanceType}}",
-        "KeyName": "{{.KeyName}}",
+        {{if .KeyName}}"KeyName": "{{.KeyName}}",{{end}}
         "SecurityGroups": [
           {{range $sgRef := .WorkerSecurityGroupRefs}}
             {{$sgRef}},
@@ -516,23 +614,6 @@
         {{end}}
         "UserData": "{{ .UserDataWorker }}"
       },
-{{ if .Experimental.AwsEnvironment.Enabled }}
-      "Metadata" : {
-        "AWS::CloudFormation::Init" : {
-          "config" : {
-            "commands": {
-              "write-environment": {
-                "command": { "Fn::Join" : ["", [ "echo '",
-{{range $variable, $function := .Experimental.AwsEnvironment.Environment}}
-"{{$variable}}=", {{$function}} , "\n",
-{{end}}
-"' > /etc/aws-environment" ] ] }
-              }
-            }
-          }
-        }
-      },
-{{end}}
       "Type": "AWS::AutoScaling::LaunchConfiguration"
     },
     "LaunchConfigurationController": {
@@ -554,7 +635,7 @@
         },
         "ImageId": "{{.AMI}}",
         "InstanceType": "{{.ControllerInstanceType}}",
-        "KeyName": "{{.KeyName}}",
+        {{if .KeyName}}"KeyName": "{{.KeyName}}",{{end}}
         "SecurityGroups": [
           {
             "Ref": "SecurityGroupController"
@@ -563,23 +644,6 @@
         "PlacementTenancy": "{{ .ControllerTenancy }}",
         "UserData": "{{ .UserDataController }}"
       },
-  {{ if .Experimental.AwsEnvironment.Enabled }}
-      "Metadata" : {
-        "AWS::CloudFormation::Init" : {
-          "config" : {
-            "commands": {
-              "write-environment": {
-                "command": { "Fn::Join" : ["", [ "echo '",
-{{range $variable, $function := .Experimental.AwsEnvironment.Environment}}
-"{{$variable}}=", {{$function}} , "\n",
-{{end}}
-"' > /etc/aws-environment" ] ] }
-              }
-            }
-          }
-        }
-      },
-  {{end}}
       "Type": "AWS::AutoScaling::LaunchConfiguration"
     },
     "ElbAPIServer" : {
@@ -628,6 +692,12 @@
             "FromPort": 443,
             "IpProtocol": "tcp",
             "ToPort": 443
+          },
+          {
+             "CidrIp": "0.0.0.0/0",
+             "FromPort": -1,
+             "IpProtocol": "icmp",
+             "ToPort": -1
           }
         ],
         "Tags": [
@@ -949,6 +1019,20 @@
       },
       "Type": "AWS::EC2::SecurityGroup"
     },
+    "SecurityGroupEtcdPeerHealthCheckIngress": {
+      "Properties": {
+        "FromPort": 2379,
+        "GroupId": {
+          "Ref": "SecurityGroupEtcd"
+        },
+        "IpProtocol": "tcp",
+        "SourceSecurityGroupId": {
+          "Ref": "SecurityGroupEtcd"
+        },
+        "ToPort": 2379
+      },
+      "Type": "AWS::EC2::SecurityGroupIngress"
+    },
     "SecurityGroupEtcdPeerIngress": {
       "Properties": {
         "FromPort": 2380,
@@ -1157,6 +1241,13 @@
       "Description" : "The security group assigned to worker nodes",
       "Value" :  { "Ref" : "SecurityGroupWorker" },
       "Export" : { "Name" : {"Fn::Sub": "${AWS::StackName}-WorkerSecurityGroup" }}
+    },
+    {{range $index, $_ := $.EtcdInstances}}
+    {{if $index}},{{end}}"InstanceEtcd{{$index}}PrivateDnsName": {
+      "Description": "The resolvable hostname of etcd node {{$index}}",
+      "Value": { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] },
+      "Export": { "Name" : "{{$.ClusterName}}-InstanceEtcd{{$index}}PrivateDnsName" }
     }
+    {{end}}
   }
 }
