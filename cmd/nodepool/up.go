@@ -1,10 +1,10 @@
-package main
+package nodepool
 
 import (
 	"fmt"
 
-	"github.com/coreos/kube-aws/cluster"
-	"github.com/coreos/kube-aws/config"
+	"github.com/coreos/kube-aws/nodepool/cluster"
+	"github.com/coreos/kube-aws/nodepool/config"
 	"github.com/spf13/cobra"
 	"io/ioutil"
 )
@@ -19,35 +19,36 @@ var (
 	}
 
 	upOpts = struct {
-		awsDebug, export bool
-		s3URI            string
+		awsDebug, export, prettyPrint bool
+		s3URI                         string
 	}{}
 )
 
 func init() {
-	cmdRoot.AddCommand(cmdUp)
+	NodePoolCmd.AddCommand(cmdUp)
 	cmdUp.Flags().BoolVar(&upOpts.export, "export", false, "Don't create cluster, instead export cloudformation stack file")
+	cmdUp.Flags().BoolVar(&upOpts.prettyPrint, "pretty-print", false, "Pretty print the resulting CloudFormation")
 	cmdUp.Flags().BoolVar(&upOpts.awsDebug, "aws-debug", false, "Log debug information from aws-sdk-go library")
-	cmdUp.Flags().StringVar(&upOpts.s3URI, "s3-uri", "", "When your template is bigger than the cloudformation limit of 51200 bytes, upload the template to the specified location in S3. S3 location expressed as s3://<bucket>/path/to/dir")
+	cmdUp.Flags().StringVar(&upOpts.s3URI, "s3-uri", "", "When your template is bigger than the cloudformation limit of 51200 bytes, upload the template to the specified location in S3")
 }
 
 func runCmdUp(cmd *cobra.Command, args []string) error {
-	conf, err := config.ClusterFromFile(configPath)
+	conf, err := config.ClusterFromFile(nodePoolClusterConfigFilePath())
 	if err != nil {
 		return fmt.Errorf("Failed to read cluster config: %v", err)
 	}
 
-	if err := conf.ValidateUserData(stackTemplateOptions); err != nil {
-		return err
+	if err := conf.ValidateUserData(stackTemplateOptions()); err != nil {
+		return fmt.Errorf("Failed to validate user data: %v", err)
 	}
 
-	data, err := conf.RenderStackTemplate(stackTemplateOptions)
+	data, err := conf.RenderStackTemplate(stackTemplateOptions(), upOpts.export)
 	if err != nil {
 		return fmt.Errorf("Failed to render stack template: %v", err)
 	}
 
 	if upOpts.export {
-		templatePath := fmt.Sprintf("%s.stack-template.json", conf.ClusterName)
+		templatePath := nodePoolExportedStackTemplatePath()
 		fmt.Printf("Exporting %s\n", templatePath)
 		if err := ioutil.WriteFile(templatePath, data, 0600); err != nil {
 			return fmt.Errorf("Error writing %s : %v", templatePath, err)

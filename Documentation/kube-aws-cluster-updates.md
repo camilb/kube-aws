@@ -1,4 +1,4 @@
-# kube-aws cluster updates
+# Updating the Kubernetes cluster
 
 ## Types of cluster update
 There are two distinct categories of cluster update.
@@ -33,9 +33,13 @@ There is no solution for hosting an etcd cluster in a way that is easily updatea
 
 Fortunately, CoreOS update engine will take care of keeping the members of the etcd cluster up-to-date, but you as the operator will not be able to modify them after creation via the update mechanism.
 
-In the (near) future, etcd will be hosted on Kubernetes and this problem will no longer be relevant. Rather than concocting overly complex bandaide, we've decided to "punt" on this issue of the time being.
+In the (near) future, etcd will be hosted on Kubernetes and this problem will no longer be relevant. Rather than concocting overly complex band-aid, we've decided to "punt" on this issue of the time being.
 
+Once you have successfully updated your cluster, you are ready to [add node pools to your cluster][aws-step-5].
 
-
-
-
+[aws-step-1]: kubernetes-on-aws.md
+[aws-step-2]: kubernetes-on-aws-render.md
+[aws-step-3]: kubernetes-on-aws-launch.md
+[aws-step-4]: kube-aws-cluster-updates.md
+[aws-step-5]: kubernetes-on-aws-node-pool.md
+[aws-step-6]: kubernetes-on-aws-destroy.md

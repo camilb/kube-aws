@@ -9,7 +9,7 @@
     }
   },
   "Resources": {
-    "AutoScaleWorker": {
+    "{{.Worker.LogicalName}}": {
       "Properties": {
         "AvailabilityZones": [
           {{range $index, $subnet := .Subnets}}
@@ -17,13 +17,17 @@
           "{{$subnet.AvailabilityZone}}"
           {{end}}
         ],
-        "DesiredCapacity": "{{.WorkerCount}}",
         "HealthCheckGracePeriod": 600,
         "HealthCheckType": "EC2",
         "LaunchConfigurationName": {
           "Ref": "LaunchConfigurationWorker"
         },
         "MaxSize": "{{.MaxWorkerCount}}",
+        "MetricsCollection": [
+          {
+            "Granularity": "1Minute"
+          }
+        ],
         "MinSize": "{{.MinWorkerCount}}",
         "Tags": [
           {
@@ -37,6 +41,14 @@
             "Value": "{{.ClusterName}}-kube-aws-worker"
           }
         ],
+        {{if .Experimental.LoadBalancer.Enabled}}
+        "LoadBalancerNames" : [
+        {{range $index, $elb := .Experimental.LoadBalancer.Names}}
+        {{if $index}},{{end}}
+          "{{$elb}}"
+        {{end}}
+        ],
+        {{end}}
         "VPCZoneIdentifier": [
           {{range $index, $subnet := .Subnets}}
           {{with $subnetLogicalName := printf "Subnet%d" $index}}
@@ -52,7 +64,7 @@
       {{if .Experimental.WaitSignal.Enabled}}
       "CreationPolicy" : {
         "ResourceSignal" : {
-          "Count" : "{{.WorkerCount}}",
+          "Count" : "{{.MinWorkerCount}}",
           "Timeout" : "{{.WorkerCreateTimeout}}"
         }
       },
@@ -63,7 +75,7 @@
           {{if .WorkerSpotPrice}}
           "0"
           {{else}}
-          "{{.WorkerCount}}"
+          "{{.WorkerRollingUpdateMinInstancesInService}}"
           {{end}},
           {{if .Experimental.WaitSignal.Enabled}}
           "WaitOnResourceSignals" : "true",
@@ -75,9 +87,44 @@
           {{end}}
         }
       },
-      "DependsOn" : ["AutoScaleController"]
+      "Metadata" : {
+        "AWS::CloudFormation::Init" : {
+          "configSets" : {
+              "etcd-client": [ "etcd-client-env" ]{{if .Experimental.AwsEnvironment.Enabled}},
+              "aws-environment": [ "aws-environment-env" ]{{end}}
+          },
+          {{ if .Experimental.AwsEnvironment.Enabled }}
+          "aws-environment-env" : {
+            "commands": {
+              "write-environment": {
+                "command": { "Fn::Join" : ["", [ "echo '",
+                  {{range $variable, $function := .Experimental.AwsEnvironment.Environment}}
+                  "{{$variable}}=", {{$function}} , "\n",
+                  {{end}}
+                  "' > /etc/aws-environment" ] ] }
+              }
+            }
+          },
+          {{ end }}
+          "etcd-client-env": {
+            "files" : {
+              "/var/run/coreos/etcd-environment": {
+                "content": { "Fn::Join" : [ "", [
+                  "ETCD_ENDPOINTS='",
+{{range $index, $_ := $.EtcdInstances}}
+                  {{if $index}}",", {{end}} "https://",
+                    { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] }, ":2379",
+{{end}}
+                  "'\n"
+                ]]}
+              }
+            }
+          }
+        }
+      },
+      "DependsOn" : ["{{.Controller.LogicalName}}"]
     },
-    "AutoScaleController": {
+    "{{.Controller.LogicalName}}": {
       "Type": "AWS::AutoScaling::AutoScalingGroup",
       "Properties": {
         "AvailabilityZones": [
@@ -86,13 +133,17 @@
           "{{$subnet.AvailabilityZone}}"
           {{end}}
         ],
-        "DesiredCapacity": "{{.ControllerCount}}",
         "HealthCheckGracePeriod": 600,
         "HealthCheckType": "EC2",
         "LaunchConfigurationName": {
           "Ref": "LaunchConfigurationController"
         },
         "MaxSize": "{{.MaxControllerCount}}",
+        "MetricsCollection": [
+          {
+            "Granularity": "1Minute"
+          }
+        ],
         "MinSize": "{{.MinControllerCount}}",
         "Tags": [
           {
@@ -116,21 +167,21 @@
           {{end}}
           {{end}}
         ],
-	"LoadBalancerNames" : [
-	  { "Ref" : "ElbAPIServer" }
-	]
+        "LoadBalancerNames" : [
+          { "Ref" : "ElbAPIServer" }
+        ]
       },
       {{if .Experimental.WaitSignal.Enabled}}
       "CreationPolicy" : {
         "ResourceSignal" : {
-          "Count" : "{{.ControllerCount}}",
+          "Count" : "{{.MinControllerCount}}",
           "Timeout" : "{{.ControllerCreateTimeout}}"
         }
       },
       {{end}}
       "UpdatePolicy" : {
         "AutoScalingRollingUpdate" : {
-          "MinInstancesInService" : "{{.ControllerCount}}",
+          "MinInstancesInService" : "{{.ControllerRollingUpdateMinInstancesInService}}",
           "MaxBatchSize" : "1",
           {{if .Experimental.WaitSignal.Enabled}}
           "WaitOnResourceSignals" : "true",
@@ -138,6 +189,59 @@
           {{else}}
           "PauseTime": "PT2M"
           {{end}}
+        }
+      },
+      "Metadata" : {
+        "AWS::CloudFormation::Init" : {
+          "configSets" : {
+              "etcd-server": [ "etcd-server-env" ],
+              "etcd-client": [ "etcd-client-env" ]{{if .Experimental.AwsEnvironment.Enabled}},
+              "aws-environment": [ "aws-environment-env" ]{{end}}
+          },
+          {{ if .Experimental.AwsEnvironment.Enabled }}
+          "aws-environment-env" : {
+            "commands": {
+              "write-environment": {
+                "command": { "Fn::Join" : ["", [ "echo '",
+                  {{range $variable, $function := .Experimental.AwsEnvironment.Environment}}
+                  "{{$variable}}=", {{$function}} , "\n",
+                  {{end}}
+                  "' > /etc/aws-environment" ] ] }
+              }
+            }
+          },
+          {{ end }}
+          "etcd-server-env": {
+            "files" : {
+              "/var/run/coreos/etcd-environment": {
+                "content": { "Fn::Join" : [ "", [
+                  "ETCD_INITIAL_CLUSTER='",
+                  {{range $index, $_ := $.EtcdInstances}}
+                  {{if $index}}",", {{end}}
+                  { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] },
+                  "=https://",
+                  { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] },
+                  ":2380",
+                  {{end}}
+                  "'\n"
+                ]]}
+              }
+            }
+          },
+          "etcd-client-env": {
+            "files" : {
+              "/var/run/coreos/etcd-environment": {
+                "content": { "Fn::Join" : [ "", [
+                  "ETCD_ENDPOINTS='",
+{{range $index, $_ := $.EtcdInstances}}
+                  {{if $index}}",", {{end}} "https://",
+                    { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] }, ":2379",
+{{end}}
+                  "'\n"
+                ]]}
+              }
+            }
+          }
         }
       }
     },
@@ -239,11 +343,20 @@
                     ] }
                 },
                 {{end}}
+                {{if .Experimental.AwsNodeLabels.Enabled}}
+                {
+                  "Action": "autoscaling:Describe*",
+                  "Effect": "Allow",
+                  "Resource": [ "*" ]
+                },
+                {{end}}
+                {{if .ManageCertificates}}
                 {
                   "Action" : "kms:Decrypt",
                   "Effect" : "Allow",
                   "Resource" : "{{.KMSKeyARN}}"
                 },
+                {{end}}
                 {
                   "Action": [
                     "ecr:GetAuthorizationToken",
@@ -304,11 +417,13 @@
                   "Effect": "Allow",
                   "Resource": "*"
                 },
+                {{if .ManageCertificates}}
                 {
                   "Action" : "kms:Decrypt",
                   "Effect" : "Allow",
                   "Resource" : "{{.KMSKeyARN}}"
                 },
+                {{end}}
                 {{if .Experimental.WaitSignal.Enabled}}
                 {
                   "Action": "cloudformation:SignalResource",
@@ -323,6 +438,13 @@
                       { "Ref": "AWS::StackName" },
                       "/*" ]
                     ] }
+                },
+                {{end}}
+                {{if .Experimental.AwsNodeLabels.Enabled}}
+                {
+                  "Action": "autoscaling:Describe*",
+                  "Effect": "Allow",
+                  "Resource": [ "*" ]
                 },
                 {{end}}
                 {
@@ -367,6 +489,7 @@
         },
         "Path": "/",
         "Policies": [
+          {{if .ManageCertificates}}
           {
             "PolicyDocument": {
               "Statement": [
@@ -380,18 +503,37 @@
             },
             "PolicyName": "root"
           }
+          {{end}}
         ]
       },
+
       "Type": "AWS::IAM::Role"
     },
     {{range $etcdIndex, $etcdInstance := .EtcdInstances}}
+    "InstanceEtcd{{$etcdIndex}}eni": {
+      "Properties": {
+          "SubnetId": {
+            "Ref": "Subnet{{$etcdInstance.SubnetIndex}}"
+          },
+          "GroupSet": [
+            {
+              "Ref": "SecurityGroupEtcd"
+            }
+          ]
+      },
+      "Type": "AWS::EC2::NetworkInterface"
+    },
     "InstanceEtcd{{$etcdIndex}}": {
       "Properties": {
         "BlockDeviceMappings": [
           {
             "DeviceName": "/dev/xvda",
             "Ebs": {
-              "VolumeSize": "{{$.EtcdRootVolumeSize}}"
+              "VolumeSize": "{{$.EtcdRootVolumeSize}}",
+              {{if gt $.EtcdRootVolumeIOPS 0}}
+              "Iops": "{{$.EtcdRootVolumeIOPS}}",
+              {{end}}
+              "VolumeType": "{{$.EtcdRootVolumeType}}"
             }
           },
 	  {
@@ -400,7 +542,11 @@
 	    "VirtualName" : "ephemeral0"
 	    {{else}}
             "Ebs": {
-              "VolumeSize": "{{$.EtcdDataVolumeSize}}"
+              "VolumeSize": "{{$.EtcdDataVolumeSize}}",
+              {{if gt $.EtcdDataVolumeIOPS 0}}
+              "Iops": "{{$.EtcdDataVolumeIOPS}}",
+              {{end}}
+              "VolumeType": "{{$.EtcdDataVolumeType}}"
             }
 	    {{end}}
           }
@@ -410,21 +556,11 @@
         },
         "ImageId": "{{$.AMI}}",
         "InstanceType": "{{$.EtcdInstanceType}}",
-        "KeyName": "{{$.KeyName}}",
+        {{if $.KeyName}}"KeyName": "{{$.KeyName}}",{{end}}
         "NetworkInterfaces": [
           {
-            "AssociatePublicIpAddress": {{$.MapPublicIPs}},
-            "DeleteOnTermination": true,
-            "DeviceIndex": "0",
-            "GroupSet": [
-              {
-                "Ref": "SecurityGroupEtcd"
-              }
-            ],
-            "PrivateIpAddress": "{{$etcdInstance.IPAddress}}",
-            "SubnetId": {
-              "Ref": "Subnet{{$etcdInstance.SubnetIndex}}"
-            }
+            "NetworkInterfaceId": { "Ref": "InstanceEtcd{{$etcdIndex}}eni" },
+            "DeviceIndex": "0"
           }
         ],
         "Tags": [
@@ -437,6 +573,7 @@
             "Value": "{{$.ClusterName}}-kube-aws-etcd-{{$etcdIndex}}"
           }
         ],
+        "Tenancy": "{{$.EtcdTenancy}}",
         "UserData": { "Fn::FindInMap" : [ "EtcdInstanceParams", "UserData", "cloudconfig"] }
       },
       "Type": "AWS::EC2::Instance"
@@ -461,34 +598,22 @@
         },
         "ImageId": "{{.AMI}}",
         "InstanceType": "{{.WorkerInstanceType}}",
-        "KeyName": "{{.KeyName}}",
+        {{if .KeyName}}"KeyName": "{{.KeyName}}",{{end}}
         "SecurityGroups": [
+          {{range $sgRef := .WorkerSecurityGroupRefs}}
+            {{$sgRef}},
+          {{end}}
           {
             "Ref": "SecurityGroupWorker"
           }
         ],
         {{if .WorkerSpotPrice}}
         "SpotPrice": {{.WorkerSpotPrice}},
+        {{else}}
+        "PlacementTenancy": "{{.WorkerTenancy}}",
         {{end}}
         "UserData": "{{ .UserDataWorker }}"
       },
-{{ if .Experimental.AwsEnvironment.Enabled }}
-      "Metadata" : {
-        "AWS::CloudFormation::Init" : {
-          "config" : {
-            "commands": {
-              "write-environment": {
-                "command": { "Fn::Join" : ["", [ "echo '",
-{{range $variable, $function := .Experimental.AwsEnvironment.Environment}}
-"{{$variable}}=", {{$function}} , "\n",
-{{end}}
-"' > /etc/aws-environment" ] ] }
-              }
-            }
-          }
-        }
-      },
-{{end}}
       "Type": "AWS::AutoScaling::LaunchConfiguration"
     },
     "LaunchConfigurationController": {
@@ -497,7 +622,11 @@
           {
             "DeviceName": "/dev/xvda",
             "Ebs": {
-              "VolumeSize": "{{.ControllerRootVolumeSize}}"
+              "VolumeSize": "{{.ControllerRootVolumeSize}}",
+              {{if gt .ControllerRootVolumeIOPS 0}}
+              "Iops": "{{.ControllerRootVolumeIOPS}}",
+              {{end}}
+              "VolumeType": "{{.ControllerRootVolumeType}}"
             }
           }
         ],
@@ -506,31 +635,15 @@
         },
         "ImageId": "{{.AMI}}",
         "InstanceType": "{{.ControllerInstanceType}}",
-        "KeyName": "{{.KeyName}}",
+        {{if .KeyName}}"KeyName": "{{.KeyName}}",{{end}}
         "SecurityGroups": [
           {
             "Ref": "SecurityGroupController"
           }
         ],
+        "PlacementTenancy": "{{ .ControllerTenancy }}",
         "UserData": "{{ .UserDataController }}"
       },
-  {{ if .Experimental.AwsEnvironment.Enabled }}
-      "Metadata" : {
-        "AWS::CloudFormation::Init" : {
-          "config" : {
-            "commands": {
-              "write-environment": {
-                "command": { "Fn::Join" : ["", [ "echo '",
-{{range $variable, $function := .Experimental.AwsEnvironment.Environment}}
-"{{$variable}}=", {{$function}} , "\n",
-{{end}}
-"' > /etc/aws-environment" ] ] }
-              }
-            }
-          }
-        }
-      },
-  {{end}}
       "Type": "AWS::AutoScaling::LaunchConfiguration"
     },
     "ElbAPIServer" : {
@@ -579,6 +692,12 @@
             "FromPort": 443,
             "IpProtocol": "tcp",
             "ToPort": 443
+          },
+          {
+             "CidrIp": "0.0.0.0/0",
+             "FromPort": -1,
+             "IpProtocol": "icmp",
+             "ToPort": -1
           }
         ],
         "Tags": [
@@ -900,6 +1019,20 @@
       },
       "Type": "AWS::EC2::SecurityGroup"
     },
+    "SecurityGroupEtcdPeerHealthCheckIngress": {
+      "Properties": {
+        "FromPort": 2379,
+        "GroupId": {
+          "Ref": "SecurityGroupEtcd"
+        },
+        "IpProtocol": "tcp",
+        "SourceSecurityGroupId": {
+          "Ref": "SecurityGroupEtcd"
+        },
+        "ToPort": 2379
+      },
+      "Type": "AWS::EC2::SecurityGroupIngress"
+    },
     "SecurityGroupEtcdPeerIngress": {
       "Properties": {
         "FromPort": 2380,
@@ -1089,5 +1222,32 @@
     {{end}}
     {{end}}
 
+  },
+
+  "Outputs": {
+    {{if not .VPCID}}
+    "RouteTable" : {
+      "Description" : "The route table assigned managed by this stack",
+      "Value" :  { "Ref" : "RouteTable" },
+      "Export" : { "Name" : {"Fn::Sub": "${AWS::StackName}-RouteTable" }}
+    },
+    "VPC" : {
+      "Description" : "The VPC managed by this stack",
+      "Value" :  { "Ref" : "{{.VPCLogicalName}}" },
+      "Export" : { "Name" : {"Fn::Sub": "${AWS::StackName}-VPC" }}
+    },
+    {{end}}
+    "WorkerSecurityGroup" : {
+      "Description" : "The security group assigned to worker nodes",
+      "Value" :  { "Ref" : "SecurityGroupWorker" },
+      "Export" : { "Name" : {"Fn::Sub": "${AWS::StackName}-WorkerSecurityGroup" }}
+    },
+    {{range $index, $_ := $.EtcdInstances}}
+    {{if $index}},{{end}}"InstanceEtcd{{$index}}PrivateDnsName": {
+      "Description": "The resolvable hostname of etcd node {{$index}}",
+      "Value": { "Fn::GetAtt" : [ "InstanceEtcd{{$index}}", "PrivateDnsName" ] },
+      "Export": { "Name" : "{{$.ClusterName}}-InstanceEtcd{{$index}}PrivateDnsName" }
+    }
+    {{end}}
   }
 }

@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"fmt"
@@ -25,7 +25,7 @@ var (
 )
 
 func init() {
-	cmdRoot.AddCommand(cmdValidate)
+	RootCmd.AddCommand(cmdValidate)
 	cmdValidate.Flags().BoolVar(
 		&validateOpts.awsDebug,
 		"aws-debug",
@@ -53,7 +53,7 @@ func runCmdValidate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("UserData is valid.\n\n")
 
 	fmt.Printf("Validating stack template...\n")
-	data, err := cfg.RenderStackTemplate(stackTemplateOptions)
+	data, err := cfg.RenderStackTemplate(stackTemplateOptions, false)
 	if err != nil {
 		return fmt.Errorf("Failed to render stack template: %v", err)
 	}

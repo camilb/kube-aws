@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bytes"
@@ -42,7 +42,7 @@ var (
 
 	cmdRenderStack = &cobra.Command{
 		Use:          "stack",
-		Short:        "Render CloudFormation stack",
+		Short:        "Render CloudFormation stack template and coreos-cloudinit userdata",
 		Long:         ``,
 		RunE:         runCmdRenderStack,
 		SilenceUsage: true,
@@ -50,7 +50,7 @@ var (
 )
 
 func init() {
-	cmdRoot.AddCommand(cmdRender)
+	RootCmd.AddCommand(cmdRender)
 
 	cmdRender.AddCommand(cmdRenderCredentials)
 	cmdRenderCredentials.Flags().BoolVar(&renderCredentialsOpts.generateCA, "generate-ca", false, "if generating credentials, generate root CA key and cert. NOT RECOMMENDED FOR PRODUCTION USE- use '-ca-key-path' and '-ca-cert-path' options to provide your own certificate authority assets")

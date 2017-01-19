@@ -17,7 +17,7 @@ externalDNSName: {{.ExternalDNSName}}
 # If omitted, the latest AMI for the releaseChannel is used.
 #amiId: ""
 
-# Set to true if you want kube-aws to create a Route53 A Record for you.
+# Set to true if you want kube-aws to create a Route53 Alias Record pointing to the controller ELB for you.
 #createRecordSet: false
 
 # TTL in seconds for the Route53 RecordSet created if createRecordSet is set to true.
@@ -50,14 +50,22 @@ availabilityZone: {{.AvailabilityZone}}
 # ARN of the KMS key used to encrypt TLS assets.
 kmsKeyArn: "{{.KMSKeyARN}}"
 
-# Number of controller nodes to create
+# Number of controller nodes to create, for more control use `controller.autoScalingGroup` and do not use this setting
 #controllerCount: 1
+
+controller:
+  # Auto Scaling Group definition for controllers. If only `controllerCount` is specified, min and max will be the set to that value and `rollingUpdateMinInstancesInService` will be one less.
+  # autoScalingGroup:
+  #   minSize: 1
+  #   maxSize: 3
+  #   rollingUpdateMinInstancesInService: 2
 
 # Maximum time to wait for controller creation
 #controlerCreateTimeout: PT15M
 
-# Instance type for controller node
-#controllerInstanceType: m3.medium
+# Instance type for controller node.
+# CAUTION: Don't use t2.micro or the cluster won't work. See https://github.com/kubernetes/kubernetes/issues/18975
+#controllerInstanceType: t2.medium
 
 # Disk size (GiB) for controller node
 #controllerRootVolumeSize: 30
@@ -68,14 +76,22 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 # Number of I/O operations per second (IOPS) that the controller node disk supports. Leave blank if controllerRootVolumeType is not io1
 #controllerRootVolumeIOPS: 0
 
-# Number of worker nodes to create
+# Number of worker nodes to create, for more control use `worker.autoScalingGroup` and do not use this setting
 #workerCount: 1
+
+# worker:
+#   # Auto Scaling Group definition for workers. If only `workerCount` is specified, min and max will be the set to that value and `rollingUpdateMinInstancesInService` will be one less.
+#   autoScalingGroup:
+#     minSize: 1
+#     maxSize: 3
+#     rollingUpdateMinInstancesInService: 2
 
 # Maximum time to wait for worker creation
 #workerCreateTimeout: PT15M
 
 # Instance type for worker nodes
-#workerInstanceType: m3.medium
+# CAUTION: Don't use t2.micro or the cluster won't work. See https://github.com/kubernetes/kubernetes/issues/16122
+#workerInstanceType: t2.medium
 
 # Disk size (GiB) for worker nodes
 #workerRootVolumeSize: 30
@@ -86,8 +102,17 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 # Number of I/O operations per second (IOPS) that the worker node disk supports. Leave blank if workerRootVolumeType is not io1
 #workerRootVolumeIOPS: 0
 
+# Tenancy of the worker nodes. Options are "default" and "dedicated"
+# Documentation: http://docs.aws.amazon.com/AmazonVPC/latest/UserGuide/dedicated-instance.html
+# workerTenancy: default
+
 # Price (Dollars) to bid for spot instances. Omit for on-demand instances.
 # workerSpotPrice: "0.05"
+
+# Existing "glue" security groups attached to worker nodes which are typically used to allow access from worker nodes to services running on an existing infrastructure
+# workerSecurityGroupIds:
+#   - sg-1234abcd
+#   - sg-5678efab
 
 ## Etcd Cluster config
 ## WARNING: Any changes to etcd parameters after the cluster is first created will not be applied
@@ -99,18 +124,34 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 # etcdCount: 1
 
 # Instance type for etcd node
-# etcdInstanceType: m3.medium
+# etcdInstanceType: t2.medium
 
-# Root volume disk size (GiB) for etcd node
+# Root volume size (GiB) for etcd node
 # etcdRootVolumeSize: 30
+
+# Root volume type for etcd node (one of standard, io1, or gp2)
+# etcdRootVolumeType: gp2
+
+# Number of I/O operations per second (IOPS) that the etcd node's root volume supports. Leave blank if etcdRootVolumeType is not io1
+# etcdRootVolumeIOPS: 0
 
 # Use ephemeral instance storage for etcd data volume instead of EBS?
 # (Recommended set to true for high-throughput control planes)
 # etcdDataVolumeEphemeral: false
 
-# Data EBS volume disk size (GiB) for etcd node
+# Data volume size (GiB) for etcd node
 # if etcdDataVolumeEphemeral=true, this value is ignored. The size of ephemeral volumes is not configurable.
 # etcdDataVolumeSize: 30
+
+# Data volume type for etcd node (one of standard, io1, or gp2)
+# etcdDataVolumeType: gp2
+
+# Number of I/O operations per second (IOPS) that the etcd node's data volume supports. Leave blank if etcdDataVolumeType is not io1
+# etcdDataVolumeIOPS: 0
+
+# Tenancy of the etcd instances. Options are "default" and "dedicated"
+# Documentation: http://docs.aws.amazon.com/AmazonVPC/latest/UserGuide/dedicated-instance.html
+# etcdTenancy: default
 
 ## Networking config
 
@@ -153,7 +194,7 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 #tlsCertDurationDays: 365
 
 # Version of hyperkube image to use. This is the tag for the hyperkube image repository.
-# kubernetesVersion: v1.4.6_coreos.0
+# kubernetesVersion: v1.5.2_coreos.0
 
 # Hyperkube image repository to use.
 # hyperkubeImageRepo: quay.io/coreos/hyperkube
@@ -172,23 +213,71 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 #
 # You can create a new EFS volume using the CLI:
 # $ aws efs create-file-system --creation-token $(uuidgen)
+#
+# Beware that an EFS file system can not be mounted from mutiple subnets from the same availability zone and
+# therefore this feature won't work like you might have expected when you're deploying your cluster to an existing VPC and
+# wanted to mount an existing EFS to the subnet(s) created by kube-aws
+# See https://github.com/coreos/kube-aws/issues/208 for more information
 #elasticFileSystemId: fs-47a2c22e
 
 # Determines the container runtime for kubernetes to use. Accepts 'docker' or 'rkt'.
 # containerRuntime: docker
 
+# If you do not want kube-aws to manage certificaes, set it to false. If you do that
+# you are responsible for making sure that nodes have correct certificates by the time
+# daemons start up.
+# manageCertificates: true
+
 # Experimental features will change in backward-incompatible ways
 # experimental:
-#   nodeDrainer:
-#     enabled: true
+#   # Used to provide `/etc/environment` env vars with values from arbitrary CloudFormation refs
 #   awsEnvironment:
 #     enabled: true
 #     environment:
 #       CFNSTACK: '{ "Ref" : "AWS::StackId" }'
+#   # Enable audit log for apiserver. Recommended when `rbac` is enabled.
+#   auditLog:
+#     enabled: true
+#     maxage: 30
+#     logpath: /dev/stdout
+#   # Add predefined set of labels to the nodes
+#   # The set includes names of launch configurations and autoscaling groups
+#   awsNodeLabels:
+#     enabled: true
+#   # This option has not yet been tested with rkt as container runtime
+#   ephemeralImageStorage:
+#     enabled: true
+#   # Configuration for external managed ELBs for worker nodes
+#   loadBalancer:
+#     enabled: true
+#     # Names of ELBs attached to worker nodes
+#     names: [ "manuallymanagedelb" ]
+#     # IDs of "glue" security groups attached to worker nodes to allow the ELBs to communicate with worker nodes
+#     securityGroupIds: [ "sg-87654321" ]
+#   nodeDrainer:
+#     enabled: true
+#   nodeLabels:
+#     kube-aws.coreos.com/role: worker
+#   taints:
+#     - key: dedicated
+#       value: search
+#       effect: NoSchedule
+#   # When enabled, autoscaling groups managing worker and controller nodes wait for nodes to be up and running.
+#   # Although this is still an experimental feature, it is recommended to be enabled and
+#   # it will even be enabled by default in the near future.
 #   waitSignal:
 #     enabled: true
+#   plugins:
+#     # When enabled, you also need to configure a minimum set of role bindings or everything breaks.
+#     # See https://github.com/coreos/kube-aws/issues/230 for more information.
+#     rbac:
+#       enabled: true
 
 # AWS Tags for cloudformation stack resources
 #stackTags:
 #  Name: "Kubernetes"
 #  Environment: "Production"
+
+# User-provided YAML map available in stack-template.json
+#customSettings:
+#  key1: [ 1, 2, 3 ]

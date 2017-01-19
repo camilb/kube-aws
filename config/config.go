@@ -1,26 +1,24 @@
 package config
 
-//go:generate go run templates_gen.go
+//go:generate go run ../codegen/templates_gen.go CloudConfigController=cloud-config-controller CloudConfigWorker=cloud-config-worker CloudConfigEtcd=cloud-config-etcd DefaultClusterConfig=cluster.yaml KubeConfigTemplate=kubeconfig.tmpl StackTemplateTemplate=stack-template.json
 //go:generate gofmt -w templates.go
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
+	"strconv"
 	"strings"
-	"text/template"
 	"unicode/utf8"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/kms"
-
-	"github.com/coreos/coreos-cloudinit/config/validate"
 	"github.com/coreos/go-semver/semver"
-	"github.com/coreos/kube-aws/coreosutil"
+	"github.com/coreos/kube-aws/coreos/amiregistry"
+	"github.com/coreos/kube-aws/coreos/userdatavalidation"
+	"github.com/coreos/kube-aws/filereader/jsontemplate"
+	"github.com/coreos/kube-aws/filereader/userdatatemplate"
+	model "github.com/coreos/kube-aws/model"
+	"github.com/coreos/kube-aws/netutil"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -29,14 +27,37 @@ const (
 	userDataDir    = "userdata"
 )
 
-func newDefaultCluster() *Cluster {
+func NewDefaultCluster() *Cluster {
 	experimental := Experimental{
-		NodeDrainer{
+		AuditLog{
 			Enabled: false,
+			MaxAge:  30,
+			LogPath: "/dev/stdout",
 		},
 		AwsEnvironment{
 			Enabled: false,
 		},
+		AwsNodeLabels{
+			Enabled: false,
+		},
+		EphemeralImageStorage{
+			Enabled:    false,
+			Disk:       "xvdb",
+			Filesystem: "xfs",
+		},
+		LoadBalancer{
+			Enabled: false,
+		},
+		NodeDrainer{
+			Enabled: false,
+		},
+		NodeLabels{},
+		Plugins{
+			Rbac{
+				Enabled: false,
+			},
+		},
+		[]Taint{},
 		WaitSignal{
 			Enabled:      false,
 			MaxBatchSize: 1,
@@ -44,46 +65,70 @@ func newDefaultCluster() *Cluster {
 	}
 
 	return &Cluster{
-		ClusterName:              "kubernetes",
-		ReleaseChannel:           "stable",
-		VPCCIDR:                  "10.0.0.0/16",
-		PodCIDR:                  "10.2.0.0/16",
-		ServiceCIDR:              "10.3.0.0/24",
-		DNSServiceIP:             "10.3.0.10",
-		K8sVer:                   "v1.4.6_coreos.0",
-		HyperkubeImageRepo:       "quay.io/coreos/hyperkube",
-		AWSCliImageRepo:          "quay.io/coreos/awscli",
-		AWSCliTag:                "master",
-		TLSCADurationDays:        365 * 10,
-		TLSCertDurationDays:      365,
-		ContainerRuntime:         "docker",
-		ControllerCount:          1,
-		ControllerCreateTimeout:  "PT15M",
-		ControllerInstanceType:   "m3.medium",
-		ControllerRootVolumeType: "gp2",
-		ControllerRootVolumeIOPS: 0,
-		ControllerRootVolumeSize: 30,
-		WorkerCount:              1,
-		WorkerCreateTimeout:      "PT15M",
-		WorkerInstanceType:       "m3.medium",
-		WorkerRootVolumeType:     "gp2",
-		WorkerRootVolumeIOPS:     0,
-		WorkerRootVolumeSize:     30,
-		EtcdCount:                1,
-		EtcdInstanceType:         "m3.medium",
-		EtcdRootVolumeSize:       30,
-		EtcdDataVolumeSize:       30,
-		CreateRecordSet:          false,
-		RecordSetTTL:             300,
-		Subnets:                  []*Subnet{},
-		MapPublicIPs:             true,
-		Experimental:             experimental,
-		IsChinaRegion:            false,
+		DeploymentSettings: DeploymentSettings{
+			ClusterName:        "kubernetes",
+			VPCCIDR:            "10.0.0.0/16",
+			ReleaseChannel:     "stable",
+			K8sVer:             "v1.5.2_coreos.0",
+			HyperkubeImageRepo: "quay.io/coreos/hyperkube",
+			AWSCliImageRepo:    "quay.io/coreos/awscli",
+			AWSCliTag:          "master",
+			ContainerRuntime:   "docker",
+			Subnets:            []*Subnet{},
+			MapPublicIPs:       true,
+			Experimental:       experimental,
+			ManageCertificates: true,
+		},
+		KubeClusterSettings: KubeClusterSettings{
+			DNSServiceIP: "10.3.0.10",
+		},
+		WorkerSettings: WorkerSettings{
+			Worker:                 model.NewDefaultWorker(),
+			WorkerCount:            1,
+			WorkerCreateTimeout:    "PT15M",
+			WorkerInstanceType:     "t2.medium",
+			WorkerRootVolumeType:   "gp2",
+			WorkerRootVolumeIOPS:   0,
+			WorkerRootVolumeSize:   30,
+			WorkerSecurityGroupIds: []string{},
+			WorkerTenancy:          "default",
+		},
+		ControllerSettings: ControllerSettings{
+			ControllerCount:          1,
+			ControllerCreateTimeout:  "PT15M",
+			ControllerInstanceType:   "t2.medium",
+			ControllerRootVolumeType: "gp2",
+			ControllerRootVolumeIOPS: 0,
+			ControllerRootVolumeSize: 30,
+			ControllerTenancy:        "default",
+		},
+		EtcdSettings: EtcdSettings{
+			EtcdCount:          1,
+			EtcdInstanceType:   "t2.medium",
+			EtcdRootVolumeSize: 30,
+			EtcdRootVolumeType: "gp2",
+			EtcdRootVolumeIOPS: 0,
+			EtcdDataVolumeSize: 30,
+			EtcdDataVolumeType: "gp2",
+			EtcdDataVolumeIOPS: 0,
+			EtcdTenancy:        "default",
+		},
+		FlannelSettings: FlannelSettings{
+			PodCIDR: "10.2.0.0/16",
+		},
+		// for kube-apiserver
+		ServiceCIDR: "10.3.0.0/24",
+		// for base cloudformation stack
+		TLSCADurationDays:   365 * 10,
+		TLSCertDurationDays: 365,
+		CreateRecordSet:     false,
+		RecordSetTTL:        300,
+		CustomSettings:      make(map[string]interface{}),
 	}
 }
 
-func newDefaultClusterWithDeps(encSvc encryptService) *Cluster {
-	cluster := newDefaultCluster()
+func newDefaultClusterWithDeps(encSvc EncryptService) *Cluster {
+	cluster := NewDefaultCluster()
 	cluster.providedEncryptService = encSvc
 	return cluster
 }
@@ -104,7 +149,7 @@ func ClusterFromFile(filename string) (*Cluster, error) {
 
 // ClusterFromBytes Necessary for unit tests, which store configs as hardcoded strings
 func ClusterFromBytes(data []byte) (*Cluster, error) {
-	c := newDefaultCluster()
+	c := NewDefaultCluster()
 	if err := yaml.Unmarshal(data, c); err != nil {
 		return nil, fmt.Errorf("failed to parse cluster: %v", err)
 	}
@@ -137,60 +182,121 @@ func ClusterFromBytes(data []byte) (*Cluster, error) {
 	return c, nil
 }
 
+// Part of configuration which is shared between controller nodes and worker nodes.
+// Its name is prefixed with `Kube` because it doesn't relate to etcd.
+type KubeClusterSettings struct {
+	// Required by kubelet to locate the kube-apiserver
+	ExternalDNSName string `yaml:"externalDNSName,omitempty"`
+	// Required by kubelet to locate the cluster-internal dns hosted on controller nodes in the base cluster
+	DNSServiceIP string `yaml:"dnsServiceIP,omitempty"`
+	UseCalico    bool   `yaml:"useCalico,omitempty"`
+}
+
+// Part of configuration which can't be provided via user input but is computed from user input
+type ComputedDeploymentSettings struct {
+	AMI           string
+	IsChinaRegion bool
+}
+
+// Part of configuration which can be customized for each type/group of nodes(etcd/controller/worker/) by its nature.
+//
+// Please beware that it is described as just "by its nature".
+// Whether it can actually be customized or not depends on you use node pools or not.
+// If you've chosen to create a single cluster including all the worker, controller, etcd nodes within a single cfn stack,
+// you can't customize per group of nodes.
+// If you've chosen to create e.g. a separate node pool for each type of worker nodes,
+// you can customize per node pool.
+//
+// Though it is highly configurable, it's basically users' responsibility to provide `correct` values if they're going beyond the defaults.
+type DeploymentSettings struct {
+	ComputedDeploymentSettings
+	ClusterName      string `yaml:"clusterName,omitempty"`
+	KeyName          string `yaml:"keyName,omitempty"`
+	Region           string `yaml:"region,omitempty"`
+	AvailabilityZone string `yaml:"availabilityZone,omitempty"`
+	ReleaseChannel   string `yaml:"releaseChannel,omitempty"`
+	AmiId            string `yaml:"amiId,omitempty"`
+	VPCID            string `yaml:"vpcId,omitempty"`
+	RouteTableID     string `yaml:"routeTableId,omitempty"`
+	// Required for validations like e.g. if instance cidr is contained in vpc cidr
+	VPCCIDR             string            `yaml:"vpcCIDR,omitempty"`
+	InstanceCIDR        string            `yaml:"instanceCIDR,omitempty"`
+	K8sVer              string            `yaml:"kubernetesVersion,omitempty"`
+	HyperkubeImageRepo  string            `yaml:"hyperkubeImageRepo,omitempty"`
+	AWSCliImageRepo     string            `yaml:"awsCliImageRepo,omitempty"`
+	AWSCliTag           string            `yaml:"awsCliTag,omitempty"`
+	ContainerRuntime    string            `yaml:"containerRuntime,omitempty"`
+	KMSKeyARN           string            `yaml:"kmsKeyArn,omitempty"`
+	StackTags           map[string]string `yaml:"stackTags,omitempty"`
+	Subnets             []*Subnet         `yaml:"subnets,omitempty"`
+	MapPublicIPs        bool              `yaml:"mapPublicIPs,omitempty"`
+	ElasticFileSystemID string            `yaml:"elasticFileSystemId,omitempty"`
+	SSHAuthorizedKeys   []string          `yaml:"sshAuthorizedKeys,omitempty"`
+	Experimental        Experimental      `yaml:"experimental"`
+	ManageCertificates  bool              `yaml:"manageCertificates,omitempty"`
+}
+
+// Part of configuration which is specific to worker nodes
+type WorkerSettings struct {
+	model.Worker           `yaml:"worker,omitempty"`
+	WorkerCount            int      `yaml:"workerCount,omitempty"`
+	WorkerCreateTimeout    string   `yaml:"workerCreateTimeout,omitempty"`
+	WorkerInstanceType     string   `yaml:"workerInstanceType,omitempty"`
+	WorkerRootVolumeType   string   `yaml:"workerRootVolumeType,omitempty"`
+	WorkerRootVolumeIOPS   int      `yaml:"workerRootVolumeIOPS,omitempty"`
+	WorkerRootVolumeSize   int      `yaml:"workerRootVolumeSize,omitempty"`
+	WorkerSpotPrice        string   `yaml:"workerSpotPrice,omitempty"`
+	WorkerSecurityGroupIds []string `yaml:"workerSecurityGroupIds,omitempty"`
+	WorkerTenancy          string   `yaml:"workerTenancy,omitempty"`
+}
+
+// Part of configuration which is specific to controller nodes
+type ControllerSettings struct {
+	model.Controller         `yaml:"controller,omitempty"`
+	ControllerCount          int    `yaml:"controllerCount,omitempty"`
+	ControllerCreateTimeout  string `yaml:"controllerCreateTimeout,omitempty"`
+	ControllerInstanceType   string `yaml:"controllerInstanceType,omitempty"`
+	ControllerRootVolumeType string `yaml:"controllerRootVolumeType,omitempty"`
+	ControllerRootVolumeIOPS int    `yaml:"controllerRootVolumeIOPS,omitempty"`
+	ControllerRootVolumeSize int    `yaml:"controllerRootVolumeSize,omitempty"`
+	ControllerTenancy        string `yaml:"controllerTenancy,omitempty"`
+}
+
+// Part of configuration which is specific to etcd nodes
+type EtcdSettings struct {
+	EtcdCount               int    `yaml:"etcdCount"`
+	EtcdInstanceType        string `yaml:"etcdInstanceType,omitempty"`
+	EtcdRootVolumeSize      int    `yaml:"etcdRootVolumeSize,omitempty"`
+	EtcdRootVolumeType      string `yaml:"etcdRootVolumeType,omitempty"`
+	EtcdRootVolumeIOPS      int    `yaml:"etcdRootVolumeIOPS,omitempty"`
+	EtcdDataVolumeSize      int    `yaml:"etcdDataVolumeSize,omitempty"`
+	EtcdDataVolumeType      string `yaml:"etcdDataVolumeType,omitempty"`
+	EtcdDataVolumeIOPS      int    `yaml:"etcdDataVolumeIOPS,omitempty"`
+	EtcdDataVolumeEphemeral bool   `yaml:"etcdDataVolumeEphemeral,omitempty"`
+	EtcdTenancy             string `yaml:"etcdTenancy,omitempty"`
+}
+
+// Part of configuration which is specific to flanneld
+type FlannelSettings struct {
+	PodCIDR string `yaml:"podCIDR,omitempty"`
+}
+
 type Cluster struct {
-	ClusterName              string            `yaml:"clusterName,omitempty"`
-	ExternalDNSName          string            `yaml:"externalDNSName,omitempty"`
-	KeyName                  string            `yaml:"keyName,omitempty"`
-	Region                   string            `yaml:"region,omitempty"`
-	AvailabilityZone         string            `yaml:"availabilityZone,omitempty"`
-	ReleaseChannel           string            `yaml:"releaseChannel,omitempty"`
-	AmiId                    string            `yaml:"amiId,omitempty"`
-	ControllerCount          int               `yaml:"controllerCount,omitempty"`
-	ControllerCreateTimeout  string            `yaml:"controllerCreateTimeout,omitempty"`
-	ControllerInstanceType   string            `yaml:"controllerInstanceType,omitempty"`
-	ControllerRootVolumeType string            `yaml:"controllerRootVolumeType,omitempty"`
-	ControllerRootVolumeIOPS int               `yaml:"controllerRootVolumeIOPS,omitempty"`
-	ControllerRootVolumeSize int               `yaml:"controllerRootVolumeSize,omitempty"`
-	WorkerCount              int               `yaml:"workerCount,omitempty"`
-	WorkerCreateTimeout      string            `yaml:"workerCreateTimeout,omitempty"`
-	WorkerInstanceType       string            `yaml:"workerInstanceType,omitempty"`
-	WorkerRootVolumeType     string            `yaml:"workerRootVolumeType,omitempty"`
-	WorkerRootVolumeIOPS     int               `yaml:"workerRootVolumeIOPS,omitempty"`
-	WorkerRootVolumeSize     int               `yaml:"workerRootVolumeSize,omitempty"`
-	WorkerSpotPrice          string            `yaml:"workerSpotPrice,omitempty"`
-	EtcdCount                int               `yaml:"etcdCount"`
-	EtcdInstanceType         string            `yaml:"etcdInstanceType,omitempty"`
-	EtcdRootVolumeSize       int               `yaml:"etcdRootVolumeSize,omitempty"`
-	EtcdDataVolumeSize       int               `yaml:"etcdDataVolumeSize,omitempty"`
-	EtcdDataVolumeEphemeral  bool              `yaml:"etcdDataVolumEphemeral,omitempty"`
-	VPCID                    string            `yaml:"vpcId,omitempty"`
-	RouteTableID             string            `yaml:"routeTableId,omitempty"`
-	VPCCIDR                  string            `yaml:"vpcCIDR,omitempty"`
-	InstanceCIDR             string            `yaml:"instanceCIDR,omitempty"`
-	PodCIDR                  string            `yaml:"podCIDR,omitempty"`
-	ServiceCIDR              string            `yaml:"serviceCIDR,omitempty"`
-	DNSServiceIP             string            `yaml:"dnsServiceIP,omitempty"`
-	K8sVer                   string            `yaml:"kubernetesVersion,omitempty"`
-	HyperkubeImageRepo       string            `yaml:"hyperkubeImageRepo,omitempty"`
-	AWSCliImageRepo          string            `yaml:"awsCliImageRepo,omitempty"`
-	AWSCliTag                string            `yaml:"awsCliTag,omitempty"`
-	ContainerRuntime         string            `yaml:"containerRuntime,omitempty"`
-	KMSKeyARN                string            `yaml:"kmsKeyArn,omitempty"`
-	CreateRecordSet          bool              `yaml:"createRecordSet,omitempty"`
-	RecordSetTTL             int               `yaml:"recordSetTTL,omitempty"`
-	TLSCADurationDays        int               `yaml:"tlsCADurationDays,omitempty"`
-	TLSCertDurationDays      int               `yaml:"tlsCertDurationDays,omitempty"`
-	HostedZone               string            `yaml:"hostedZone,omitempty"`
-	HostedZoneID             string            `yaml:"hostedZoneId,omitempty"`
-	StackTags                map[string]string `yaml:"stackTags,omitempty"`
-	UseCalico                bool              `yaml:"useCalico,omitempty"`
-	Subnets                  []*Subnet         `yaml:"subnets,omitempty"`
-	MapPublicIPs             bool              `yaml:"mapPublicIPs,omitempty"`
-	ElasticFileSystemID      string            `yaml:"elasticFileSystemId,omitempty"`
-	SSHAuthorizedKeys        []string          `yaml:"sshAuthorizedKeys,omitempty"`
-	Experimental             Experimental      `yaml:"experimental"`
-	providedEncryptService   encryptService
-	IsChinaRegion            bool
+	KubeClusterSettings    `yaml:",inline"`
+	DeploymentSettings     `yaml:",inline"`
+	WorkerSettings         `yaml:",inline"`
+	ControllerSettings     `yaml:",inline"`
+	EtcdSettings           `yaml:",inline"`
+	FlannelSettings        `yaml:",inline"`
+	ServiceCIDR            string `yaml:"serviceCIDR,omitempty"`
+	CreateRecordSet        bool   `yaml:"createRecordSet,omitempty"`
+	RecordSetTTL           int    `yaml:"recordSetTTL,omitempty"`
+	TLSCADurationDays      int    `yaml:"tlsCADurationDays,omitempty"`
+	TLSCertDurationDays    int    `yaml:"tlsCertDurationDays,omitempty"`
+	HostedZone             string `yaml:"hostedZone,omitempty"`
+	HostedZoneID           string `yaml:"hostedZoneId,omitempty"`
+	providedEncryptService EncryptService
+	CustomSettings         map[string]interface{} `yaml:"customSettings,omitempty"`
 }
 
 type Subnet struct {
@@ -200,18 +306,80 @@ type Subnet struct {
 }
 
 type Experimental struct {
-	NodeDrainer    NodeDrainer    `yaml:"nodeDrainer"`
-	AwsEnvironment AwsEnvironment `yaml:"awsEnvironment"`
-	WaitSignal     WaitSignal     `yaml:"waitSignal"`
+	AuditLog              AuditLog              `yaml:"auditLog"`
+	AwsEnvironment        AwsEnvironment        `yaml:"awsEnvironment"`
+	AwsNodeLabels         AwsNodeLabels         `yaml:"awsNodeLabels"`
+	EphemeralImageStorage EphemeralImageStorage `yaml:"ephemeralImageStorage"`
+	LoadBalancer          LoadBalancer          `yaml:"loadBalancer"`
+	NodeDrainer           NodeDrainer           `yaml:"nodeDrainer"`
+	NodeLabels            NodeLabels            `yaml:"nodeLabels"`
+	Plugins               Plugins               `yaml:"plugins"`
+	Taints                []Taint               `yaml:"taints"`
+	WaitSignal            WaitSignal            `yaml:"waitSignal"`
+}
+
+type AwsEnvironment struct {
+	Enabled     bool              `yaml:"enabled"`
+	Environment map[string]string `yaml:"environment"`
+}
+
+type AuditLog struct {
+	Enabled bool   `yaml:"enabled"`
+	MaxAge  int    `yaml:"maxage"`
+	LogPath string `yaml:"logpath"`
+}
+
+type AwsNodeLabels struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+type EphemeralImageStorage struct {
+	Enabled    bool   `yaml:"enabled"`
+	Disk       string `yaml:"disk"`
+	Filesystem string `yaml:"filesystem"`
 }
 
 type NodeDrainer struct {
 	Enabled bool `yaml:"enabled"`
 }
 
-type AwsEnvironment struct {
-	Enabled     bool              `yaml:"enabled"`
-	Environment map[string]string `yaml:"environment"`
+type NodeLabels map[string]string
+
+func (l NodeLabels) Enabled() bool {
+	return len(l) > 0
+}
+
+// Returns key=value pairs separated by ',' to be passed to kubelet's `--node-labels` flag
+func (l NodeLabels) String() string {
+	labels := []string{}
+	for k, v := range l {
+		labels = append(labels, fmt.Sprintf("%s=%s", k, v))
+	}
+	return strings.Join(labels, ",")
+}
+
+type LoadBalancer struct {
+	Enabled          bool     `yaml:"enabled"`
+	Names            []string `yaml:"names"`
+	SecurityGroupIds []string `yaml:"securityGroupIds"`
+}
+
+type Plugins struct {
+	Rbac Rbac `yaml:"rbac"`
+}
+
+type Rbac struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+type Taint struct {
+	Key    string `yaml:"key"`
+	Value  string `yaml:"value"`
+	Effect string `yaml:"effect"`
+}
+
+func (t Taint) String() string {
+	return fmt.Sprintf("%s=%s:%s", t.Key, t.Value, t.Effect)
 }
 
 type WaitSignal struct {
@@ -229,17 +397,60 @@ var supportedReleaseChannels = map[string]bool{
 	"stable": true,
 }
 
+func (c WorkerSettings) MinWorkerCount() int {
+	if c.Worker.AutoScalingGroup.MinSize == 0 {
+		return c.WorkerCount
+	}
+	return c.Worker.AutoScalingGroup.MinSize
+}
+
+func (c WorkerSettings) MaxWorkerCount() int {
+	if c.Worker.AutoScalingGroup.MaxSize == 0 {
+		return c.WorkerCount
+	}
+	return c.Worker.AutoScalingGroup.MaxSize
+}
+
+func (c WorkerSettings) WorkerRollingUpdateMinInstancesInService() int {
+	if c.AutoScalingGroup.RollingUpdateMinInstancesInService == 0 {
+		return c.MaxWorkerCount() - 1
+	}
+	return c.AutoScalingGroup.RollingUpdateMinInstancesInService
+}
+
+func (c ControllerSettings) MinControllerCount() int {
+	if c.Controller.AutoScalingGroup.MinSize == 0 {
+		return c.ControllerCount
+	}
+	return c.Controller.AutoScalingGroup.MinSize
+}
+
+func (c ControllerSettings) MaxControllerCount() int {
+	if c.Controller.AutoScalingGroup.MaxSize == 0 {
+		return c.ControllerCount
+	}
+	return c.Controller.AutoScalingGroup.MaxSize
+}
+
+func (c ControllerSettings) ControllerRollingUpdateMinInstancesInService() int {
+	if c.AutoScalingGroup.RollingUpdateMinInstancesInService == 0 {
+		return c.MaxControllerCount() - 1
+	}
+	return c.AutoScalingGroup.RollingUpdateMinInstancesInService
+}
+
+// Required by kubelet to locate the apiserver
+func (c KubeClusterSettings) APIServerEndpoint() string {
+	return fmt.Sprintf("https://%s", c.ExternalDNSName)
+}
+
+// Required by kubelet to use the consistent network plugin with the base cluster
+func (c KubeClusterSettings) K8sNetworkPlugin() string {
+	return "cni"
+}
+
 func (c Cluster) Config() (*Config, error) {
 	config := Config{Cluster: c}
-
-	config.MinWorkerCount = config.WorkerCount - 1
-	config.MaxWorkerCount = config.WorkerCount + 1
-
-	config.MinControllerCount = config.ControllerCount - 1
-	config.MaxControllerCount = config.ControllerCount + 1
-
-	config.APIServerEndpoint = fmt.Sprintf("https://%s", c.ExternalDNSName)
-	config.K8sNetworkPlugin = "cni"
 
 	// Check if we are running CoreOS 1151.0.0 or greater when using rkt as
 	// runtime. Proceed regardless if running alpha. TODO(pb) delete when rkt
@@ -259,7 +470,7 @@ func (c Cluster) Config() (*Config, error) {
 
 	if c.AmiId == "" {
 		var err error
-		if config.AMI, err = getAMI(config.Region, config.ReleaseChannel); err != nil {
+		if config.AMI, err = amiregistry.GetAMI(config.Region, config.ReleaseChannel); err != nil {
 			return nil, fmt.Errorf("failed getting AMI for config: %v", err)
 		}
 	} else {
@@ -278,76 +489,22 @@ func (c Cluster) Config() (*Config, error) {
 		config.VPCRef = fmt.Sprintf("%q", config.VPCID)
 	}
 
-	config.EtcdInstances = make([]etcdInstance, config.EtcdCount)
-	var etcdEndpoints, etcdInitialCluster bytes.Buffer
+	config.EtcdInstances = make([]model.EtcdInstance, config.EtcdCount)
+
 	for etcdIndex := 0; etcdIndex < config.EtcdCount; etcdIndex++ {
 
 		//Round-robbin etcd instances across all available subnets
 		subnetIndex := etcdIndex % len(config.Subnets)
-		subnet := config.Subnets[subnetIndex]
 
-		_, subnetCIDR, err := net.ParseCIDR(subnet.InstanceCIDR)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing subnet instance cidr %s: %v", subnet.InstanceCIDR, err)
-		}
-
-		if subnet.lastAllocatedAddr == nil {
-			ip := subnetCIDR.IP
-			//TODO:(chom) this is sloppy, but "soon-ish" etcd with be self-hosted so we'll leave this be
-			for i := 0; i < 3; i++ {
-				ip = incrementIP(ip)
-			}
-			subnet.lastAllocatedAddr = &ip
-		}
-
-		nextAddr := incrementIP(*subnet.lastAllocatedAddr)
-		subnet.lastAllocatedAddr = &nextAddr
-		instance := etcdInstance{
-			IPAddress:   *subnet.lastAllocatedAddr,
+		instance := model.EtcdInstance{
 			SubnetIndex: subnetIndex,
 		}
 
-		//TODO(chom): validate we're not overflowing the address space
-		//This is complicated, must also factor in DHCP addresses
-		//for ASG components
-
-		//Punt on this- we're going to have an answer for dynamic etcd clusters at some point. Then we can either throw
-		//the instances in an ASG and use DHCP like all other instances, or simply self-host on cluster
-
 		config.EtcdInstances[etcdIndex] = instance
-
-		//TODO: ipv6 support
-		if len(instance.IPAddress) != 4 {
-			return nil, fmt.Errorf("Non ipv4 address for etcd node: %v", instance.IPAddress)
-		}
 
 		//http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-instance-addressing.html#concepts-private-addresses
 
-		var dnsSuffix string
-		if config.Region == "us-east-1" {
-			// a special DNS suffix for the original AWS region!
-			dnsSuffix = "ec2.internal"
-		} else {
-			dnsSuffix = fmt.Sprintf("%s.compute.internal", config.Region)
-		}
-
-		hostname := fmt.Sprintf("ip-%d-%d-%d-%d.%s",
-			instance.IPAddress[0],
-			instance.IPAddress[1],
-			instance.IPAddress[2],
-			instance.IPAddress[3],
-			dnsSuffix,
-		)
-
-		fmt.Fprintf(&etcdEndpoints, "https://%s:2379", hostname)
-		fmt.Fprintf(&etcdInitialCluster, "%s=https://%s:2380", hostname, hostname)
-		if etcdIndex < config.EtcdCount-1 {
-			fmt.Fprintf(&etcdEndpoints, ",")
-			fmt.Fprintf(&etcdInitialCluster, ",")
-		}
 	}
-	config.EtcdEndpoints = etcdEndpoints.String()
-	config.EtcdInitialCluster = etcdInitialCluster.String()
 
 	config.IsChinaRegion = strings.HasPrefix(config.Region, "cn")
 
@@ -358,7 +515,7 @@ func (c Cluster) Config() (*Config, error) {
 // or equal to the current CoreOS release indicated by the given release
 // channel.
 func releaseVersionIsGreaterThan(minVersion semver.Version, release string) (bool, error) {
-	metaData, err := coreosutil.GetAMIData(release)
+	metaData, err := amiregistry.GetAMIData(release)
 	if err != nil {
 		return false, fmt.Errorf("Unable to retrieve current release channel version: %v", err)
 	}
@@ -396,62 +553,35 @@ type stackConfig struct {
 	ControllerSubnetIndex int
 }
 
-func execute(filename string, data interface{}, compress bool) (string, error) {
-	raw, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return "", err
-	}
-	tmpl, err := template.New(filename).Parse(string(raw))
-	if err != nil {
-		return "", err
-	}
-	var buff bytes.Buffer
-	if err := tmpl.Execute(&buff, data); err != nil {
-		return "", err
-	}
-	if compress {
-		return compressData(buff.Bytes())
-	}
-	return buff.String(), nil
-}
-
 func (c Cluster) stackConfig(opts StackTemplateOptions, compressUserData bool) (*stackConfig, error) {
-	assets, err := ReadTLSAssets(opts.TLSAssetsDir)
-	if err != nil {
-		return nil, err
-	}
+	var err error
 	stackConfig := stackConfig{}
 
 	if stackConfig.Config, err = c.Config(); err != nil {
 		return nil, err
 	}
 
-	awsConfig := aws.NewConfig().
-		WithRegion(stackConfig.Config.Region).
-		WithCredentialsChainVerboseErrors(true)
+	var compactAssets *CompactTLSAssets
 
-	// TODO Cleaner way to inject this dependency
-	var kmsSvc encryptService
-	if c.providedEncryptService != nil {
-		kmsSvc = c.providedEncryptService
-	} else {
-		kmsSvc = kms.New(session.New(awsConfig))
+	if c.ManageCertificates {
+		compactAssets, err = ReadOrCreateCompactTLSAssets(opts.TLSAssetsDir, KMSConfig{
+			Region:         stackConfig.Config.Region,
+			KMSKeyARN:      c.KMSKeyARN,
+			EncryptService: c.providedEncryptService,
+		})
+		if err != nil {
+			return nil, err
+		}
+		stackConfig.Config.TLSConfig = compactAssets
 	}
 
-	compactAssets, err := assets.compact(stackConfig.Config, kmsSvc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compress TLS assets: %v", err)
-	}
-
-	stackConfig.Config.TLSConfig = compactAssets
-
-	if stackConfig.UserDataWorker, err = execute(opts.WorkerTmplFile, stackConfig.Config, compressUserData); err != nil {
+	if stackConfig.UserDataWorker, err = userdatatemplate.GetString(opts.WorkerTmplFile, stackConfig.Config, compressUserData); err != nil {
 		return nil, fmt.Errorf("failed to render worker cloud config: %v", err)
 	}
-	if stackConfig.UserDataController, err = execute(opts.ControllerTmplFile, stackConfig.Config, compressUserData); err != nil {
+	if stackConfig.UserDataController, err = userdatatemplate.GetString(opts.ControllerTmplFile, stackConfig.Config, compressUserData); err != nil {
 		return nil, fmt.Errorf("failed to render controller cloud config: %v", err)
 	}
-	if stackConfig.UserDataEtcd, err = execute(opts.EtcdTmplFile, stackConfig.Config, compressUserData); err != nil {
+	if stackConfig.UserDataEtcd, err = userdatatemplate.GetString(opts.EtcdTmplFile, stackConfig.Config, compressUserData); err != nil {
 		return nil, fmt.Errorf("failed to render etcd cloud config: %v", err)
 	}
 
@@ -464,123 +594,33 @@ func (c Cluster) ValidateUserData(opts StackTemplateOptions) error {
 		return err
 	}
 
-	errors := []string{}
+	err = userdatavalidation.Execute([]userdatavalidation.Entry{
+		{Name: "UserDataWorker", Content: stackConfig.UserDataWorker},
+		{Name: "UserDataController", Content: stackConfig.UserDataController},
+		{Name: "UserDataEtcd", Content: stackConfig.UserDataEtcd},
+	})
 
-	for _, userData := range []struct {
-		Name    string
-		Content string
-	}{
-		{
-			Content: stackConfig.UserDataWorker,
-			Name:    "UserDataWorker",
-		},
-		{
-			Content: stackConfig.UserDataController,
-			Name:    "UserDataController",
-		},
-		{
-			Content: stackConfig.UserDataEtcd,
-			Name:    "UserDataEtcd",
-		},
-	} {
-		report, err := validate.Validate([]byte(userData.Content))
-
-		if err != nil {
-			errors = append(
-				errors,
-				fmt.Sprintf("cloud-config %s could not be parsed: %v",
-					userData.Name,
-					err,
-				),
-			)
-			continue
-		}
-
-		for _, entry := range report.Entries() {
-			errors = append(errors, fmt.Sprintf("%s: %+v", userData.Name, entry))
-		}
-	}
-
-	if len(errors) > 0 {
-		reportString := strings.Join(errors, "\n")
-		return fmt.Errorf("cloud-config validation errors:\n%s\n", reportString)
-	}
-
-	return nil
+	return err
 }
 
-func (c Cluster) RenderStackTemplate(opts StackTemplateOptions) ([]byte, error) {
+func (c Cluster) RenderStackTemplate(opts StackTemplateOptions, prettyPrint bool) ([]byte, error) {
 	stackConfig, err := c.stackConfig(opts, true)
 	if err != nil {
 		return nil, err
 	}
 
-	rendered, err := execute(opts.StackTemplateTmplFile, stackConfig, false)
+	bytes, err := jsontemplate.GetBytes(opts.StackTemplateTmplFile, stackConfig, prettyPrint)
 	if err != nil {
 		return nil, err
 	}
 
-	//Use unmarshal function to do syntax validation
-	renderedBytes := []byte(rendered)
-	var jsonHolder map[string]interface{}
-	if err := json.Unmarshal(renderedBytes, &jsonHolder); err != nil {
-		syntaxError, ok := err.(*json.SyntaxError)
-		if ok {
-			contextString := getContextString(renderedBytes, int(syntaxError.Offset), 3)
-			return nil, fmt.Errorf("%v:\njson syntax error (offset=%d), in this region:\n-------\n%s\n-------\n", err, syntaxError.Offset, contextString)
-		}
-		return nil, err
-	}
-
-	// minify JSON
-	var buff bytes.Buffer
-	if err := json.Compact(&buff, renderedBytes); err != nil {
-		return nil, err
-	}
-	return buff.Bytes(), nil
-}
-
-func getContextString(buf []byte, offset, lineCount int) string {
-
-	linesSeen := 0
-	var leftLimit int
-	for leftLimit = offset; leftLimit > 0 && linesSeen <= lineCount; leftLimit-- {
-		if buf[leftLimit] == '\n' {
-			linesSeen++
-		}
-	}
-
-	linesSeen = 0
-	var rightLimit int
-	for rightLimit = offset + 1; rightLimit < len(buf) && linesSeen <= lineCount; rightLimit++ {
-		if buf[rightLimit] == '\n' {
-			linesSeen++
-		}
-	}
-
-	return string(buf[leftLimit:rightLimit])
-}
-
-type etcdInstance struct {
-	IPAddress   net.IP
-	SubnetIndex int
+	return bytes, nil
 }
 
 type Config struct {
 	Cluster
 
-	MinWorkerCount int
-	MaxWorkerCount int
-
-	MinControllerCount int
-	MaxControllerCount int
-
-	EtcdEndpoints      string
-	EtcdInitialCluster string
-	EtcdInstances      []etcdInstance
-
-	APIServerEndpoint string
-	AMI               string
+	EtcdInstances []model.EtcdInstance
 
 	// Encoded TLS assets
 	TLSConfig *CompactTLSAssets
@@ -590,20 +630,15 @@ type Config struct {
 
 	//Reference strings for dynamic resources
 	VPCRef string
+}
 
-	K8sNetworkPlugin string
+// CloudFormation stack name which is unique in an AWS account.
+// This is intended to be used to reference stack name from cloud-config as the target of awscli or cfn-bootstrap-tools commands e.g. `cfn-init` and `cfn-signal`
+func (c Cluster) StackName() string {
+	return c.ClusterName
 }
 
 func (c Cluster) valid() error {
-	if c.ExternalDNSName == "" {
-		return errors.New("externalDNSName must be set")
-	}
-
-	releaseChannelSupported := supportedReleaseChannels[c.ReleaseChannel]
-	if !releaseChannelSupported {
-		return fmt.Errorf("releaseChannel %s is not supported", c.ReleaseChannel)
-	}
-
 	if c.CreateRecordSet {
 		if c.HostedZone == "" && c.HostedZoneID == "" {
 			return errors.New("hostedZone or hostedZoneID must be specified createRecordSet is true")
@@ -620,82 +655,27 @@ func (c Cluster) valid() error {
 			return errors.New("TTL must be at least 1 second")
 		}
 	} else {
-		if c.RecordSetTTL != newDefaultCluster().RecordSetTTL {
+		if c.RecordSetTTL != NewDefaultCluster().RecordSetTTL {
 			return errors.New(
 				"recordSetTTL should not be modified when createRecordSet is false",
 			)
 		}
 	}
-	if c.KeyName == "" {
-		return errors.New("keyName must be set")
-	}
-	if c.Region == "" {
-		return errors.New("region must be set")
-	}
-	if c.ClusterName == "" {
-		return errors.New("clusterName must be set")
-	}
-	if c.KMSKeyARN == "" {
-		return errors.New("kmsKeyArn must be set")
-	}
 
-	if c.VPCID == "" && c.RouteTableID != "" {
-		return errors.New("vpcId must be specified if routeTableId is specified")
-	}
+	var dnsServiceIPAddr net.IP
 
-	_, vpcNet, err := net.ParseCIDR(c.VPCCIDR)
-	if err != nil {
-		return fmt.Errorf("invalid vpcCIDR: %v", err)
-	}
-
-	if len(c.Subnets) == 0 {
-		if c.AvailabilityZone == "" {
-			return fmt.Errorf("availabilityZone must be set")
-		}
-		_, instanceCIDR, err := net.ParseCIDR(c.InstanceCIDR)
-		if err != nil {
-			return fmt.Errorf("invalid instanceCIDR: %v", err)
-		}
-		if !vpcNet.Contains(instanceCIDR.IP) {
-			return fmt.Errorf("vpcCIDR (%s) does not contain instanceCIDR (%s)",
-				c.VPCCIDR,
-				c.InstanceCIDR,
-			)
-		}
+	if kubeClusterValidationResult, err := c.KubeClusterSettings.Valid(); err != nil {
+		return err
 	} else {
-		if c.InstanceCIDR != "" {
-			return fmt.Errorf("The top-level instanceCIDR(%s) must be empty when subnets are specified", c.InstanceCIDR)
-		}
-		if c.AvailabilityZone != "" {
-			return fmt.Errorf("The top-level availabilityZone(%s) must be empty when subnets are specified", c.AvailabilityZone)
-		}
+		dnsServiceIPAddr = kubeClusterValidationResult.dnsServiceIPAddr
+	}
 
-		var instanceCIDRs = make([]*net.IPNet, 0)
-		for i, subnet := range c.Subnets {
-			if subnet.AvailabilityZone == "" {
-				return fmt.Errorf("availabilityZone must be set for subnet #%d", i)
-			}
-			_, instanceCIDR, err := net.ParseCIDR(subnet.InstanceCIDR)
-			if err != nil {
-				return fmt.Errorf("invalid instanceCIDR for subnet #%d: %v", i, err)
-			}
-			instanceCIDRs = append(instanceCIDRs, instanceCIDR)
-			if !vpcNet.Contains(instanceCIDR.IP) {
-				return fmt.Errorf("vpcCIDR (%s) does not contain instanceCIDR (%s) for subnet #%d",
-					c.VPCCIDR,
-					c.InstanceCIDR,
-					i,
-				)
-			}
-		}
+	var vpcNet *net.IPNet
 
-		for i, a := range instanceCIDRs {
-			for j, b := range instanceCIDRs[i+1:] {
-				if cidrOverlap(a, b) {
-					return fmt.Errorf("CIDR of subnet %d (%s) overlaps with CIDR of subnet %d (%s)", i, a, j, b)
-				}
-			}
-		}
+	if deploymentValidationResult, err := c.DeploymentSettings.Valid(); err != nil {
+		return err
+	} else {
+		vpcNet = deploymentValidationResult.vpcNet
 	}
 
 	_, podNet, err := net.ParseCIDR(c.PodCIDR)
@@ -707,25 +687,21 @@ func (c Cluster) valid() error {
 	if err != nil {
 		return fmt.Errorf("invalid serviceCIDR: %v", err)
 	}
-	if cidrOverlap(serviceNet, vpcNet) {
+	if netutil.CidrOverlap(serviceNet, vpcNet) {
 		return fmt.Errorf("vpcCIDR (%s) overlaps with serviceCIDR (%s)", c.VPCCIDR, c.ServiceCIDR)
 	}
-	if cidrOverlap(podNet, vpcNet) {
+	if netutil.CidrOverlap(podNet, vpcNet) {
 		return fmt.Errorf("vpcCIDR (%s) overlaps with podCIDR (%s)", c.VPCCIDR, c.PodCIDR)
 	}
-	if cidrOverlap(serviceNet, podNet) {
+	if netutil.CidrOverlap(serviceNet, podNet) {
 		return fmt.Errorf("serviceCIDR (%s) overlaps with podCIDR (%s)", c.ServiceCIDR, c.PodCIDR)
 	}
 
-	kubernetesServiceIPAddr := incrementIP(serviceNet.IP)
+	kubernetesServiceIPAddr := netutil.IncrementIP(serviceNet.IP)
 	if !serviceNet.Contains(kubernetesServiceIPAddr) {
 		return fmt.Errorf("serviceCIDR (%s) does not contain kubernetesServiceIP (%s)", c.ServiceCIDR, kubernetesServiceIPAddr)
 	}
 
-	dnsServiceIPAddr := net.ParseIP(c.DNSServiceIP)
-	if dnsServiceIPAddr == nil {
-		return fmt.Errorf("Invalid dnsServiceIP: %s", c.DNSServiceIP)
-	}
 	if !serviceNet.Contains(dnsServiceIPAddr) {
 		return fmt.Errorf("serviceCIDR (%s) does not contain dnsServiceIP (%s)", c.ServiceCIDR, c.DNSServiceIP)
 	}
@@ -734,6 +710,172 @@ func (c Cluster) valid() error {
 		return fmt.Errorf("dnsServiceIp conflicts with kubernetesServiceIp (%s)", dnsServiceIPAddr)
 	}
 
+	if err := c.ControllerSettings.Valid(); err != nil {
+		return err
+	}
+
+	if err := c.WorkerSettings.Valid(); err != nil {
+		return err
+	}
+
+	if err := c.WorkerDeploymentSettings().Valid(); err != nil {
+		return err
+	}
+
+	if c.WorkerTenancy != "default" && c.Worker.SpotFleet.Enabled() {
+		return fmt.Errorf("selected worker tenancy (%s) is incompatible with spot fleet", c.WorkerTenancy)
+	}
+
+	if c.WorkerTenancy != "default" && c.WorkerSpotPrice != "" {
+		return fmt.Errorf("selected worker tenancy (%s) is incompatible with spot instances", c.WorkerTenancy)
+	}
+
+	if c.Worker.ClusterAutoscaler.Enabled() {
+		return fmt.Errorf("cluster-autoscaler support can't be enabled for a main cluster because allowing so" +
+			"results in unreliability while scaling nodes out. " +
+			"Use experimental node pools instead to deploy worker nodes with cluster-autoscaler support.")
+	}
+
+	return nil
+}
+
+type InfrastructureValidationResult struct {
+	dnsServiceIPAddr net.IP
+}
+
+func (c KubeClusterSettings) Valid() (*InfrastructureValidationResult, error) {
+	if c.ExternalDNSName == "" {
+		return nil, errors.New("externalDNSName must be set")
+	}
+
+	dnsServiceIPAddr := net.ParseIP(c.DNSServiceIP)
+	if dnsServiceIPAddr == nil {
+		return nil, fmt.Errorf("Invalid dnsServiceIP: %s", c.DNSServiceIP)
+	}
+
+	return &InfrastructureValidationResult{dnsServiceIPAddr: dnsServiceIPAddr}, nil
+}
+
+type DeploymentValidationResult struct {
+	vpcNet *net.IPNet
+}
+
+func (c DeploymentSettings) Valid() (*DeploymentValidationResult, error) {
+	releaseChannelSupported := supportedReleaseChannels[c.ReleaseChannel]
+	if !releaseChannelSupported {
+		return nil, fmt.Errorf("releaseChannel %s is not supported", c.ReleaseChannel)
+	}
+
+	if c.KeyName == "" && len(c.SSHAuthorizedKeys) == 0 {
+		return nil, errors.New("Either keyName or sshAuthorizedKeys must be set")
+	}
+	if c.ClusterName == "" {
+		return nil, errors.New("clusterName must be set")
+	}
+	if c.KMSKeyARN == "" && c.ManageCertificates {
+		return nil, errors.New("kmsKeyArn must be set")
+	}
+
+	if c.VPCID == "" && c.RouteTableID != "" {
+		return nil, errors.New("vpcId must be specified if routeTableId is specified")
+	}
+
+	if c.Region == "" {
+		return nil, errors.New("region must be set")
+	}
+
+	_, vpcNet, err := net.ParseCIDR(c.VPCCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("invalid vpcCIDR: %v", err)
+	}
+
+	if len(c.Subnets) == 0 {
+		if c.AvailabilityZone == "" {
+			return nil, fmt.Errorf("availabilityZone must be set")
+		}
+		_, instanceCIDR, err := net.ParseCIDR(c.InstanceCIDR)
+		if err != nil {
+			return nil, fmt.Errorf("invalid instanceCIDR: %v", err)
+		}
+		if !vpcNet.Contains(instanceCIDR.IP) {
+			return nil, fmt.Errorf("vpcCIDR (%s) does not contain instanceCIDR (%s)",
+				c.VPCCIDR,
+				c.InstanceCIDR,
+			)
+		}
+	} else {
+		if c.InstanceCIDR != "" {
+			return nil, fmt.Errorf("The top-level instanceCIDR(%s) must be empty when subnets are specified", c.InstanceCIDR)
+		}
+		if c.AvailabilityZone != "" {
+			return nil, fmt.Errorf("The top-level availabilityZone(%s) must be empty when subnets are specified", c.AvailabilityZone)
+		}
+
+		var instanceCIDRs = make([]*net.IPNet, 0)
+		for i, subnet := range c.Subnets {
+			if subnet.AvailabilityZone == "" {
+				return nil, fmt.Errorf("availabilityZone must be set for subnet #%d", i)
+			}
+			_, instanceCIDR, err := net.ParseCIDR(subnet.InstanceCIDR)
+			if err != nil {
+				return nil, fmt.Errorf("invalid instanceCIDR for subnet #%d: %v", i, err)
+			}
+			instanceCIDRs = append(instanceCIDRs, instanceCIDR)
+			if !vpcNet.Contains(instanceCIDR.IP) {
+				return nil, fmt.Errorf("vpcCIDR (%s) does not contain instanceCIDR (%s) for subnet #%d",
+					c.VPCCIDR,
+					c.InstanceCIDR,
+					i,
+				)
+			}
+		}
+
+		for i, a := range instanceCIDRs {
+			for j, b := range instanceCIDRs[i+1:] {
+				if netutil.CidrOverlap(a, b) {
+					return nil, fmt.Errorf("CIDR of subnet %d (%s) overlaps with CIDR of subnet %d (%s)", i, a, j, b)
+				}
+			}
+		}
+	}
+
+	if err := c.Experimental.Valid(); err != nil {
+		return nil, err
+	}
+
+	return &DeploymentValidationResult{vpcNet: vpcNet}, nil
+}
+
+func (c WorkerSettings) Valid() error {
+	if c.WorkerRootVolumeType == "io1" {
+		if c.WorkerRootVolumeIOPS < 100 || c.WorkerRootVolumeIOPS > 2000 {
+			return fmt.Errorf("invalid workerRootVolumeIOPS: %d", c.WorkerRootVolumeIOPS)
+		}
+	} else {
+		if c.WorkerRootVolumeIOPS != 0 {
+			return fmt.Errorf("invalid workerRootVolumeIOPS for volume type '%s': %d", c.WorkerRootVolumeType, c.WorkerRootVolumeIOPS)
+		}
+
+		if c.WorkerRootVolumeType != "standard" && c.WorkerRootVolumeType != "gp2" {
+			return fmt.Errorf("invalid workerRootVolumeType: %s", c.WorkerRootVolumeType)
+		}
+	}
+
+	if c.WorkerCount < 0 {
+		return fmt.Errorf("`workerCount` must be zero or greater if specified")
+	}
+	// one is the default WorkerCount
+	if c.WorkerCount != 1 && (c.AutoScalingGroup.MinSize != 0 || c.AutoScalingGroup.MaxSize != 0) {
+		return fmt.Errorf("`worker.autoScalingGroup.minSize` and `worker.autoScalingGroup.maxSize` can only be specified without `workerCount`")
+	}
+	if err := c.AutoScalingGroup.Valid(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c ControllerSettings) Valid() error {
 	if c.ControllerRootVolumeType == "io1" {
 		if c.ControllerRootVolumeIOPS < 100 || c.ControllerRootVolumeIOPS > 2000 {
 			return fmt.Errorf("invalid controllerRootVolumeIOPS: %d", c.ControllerRootVolumeIOPS)
@@ -748,17 +890,24 @@ func (c Cluster) valid() error {
 		}
 	}
 
-	if c.WorkerRootVolumeType == "io1" {
-		if c.WorkerRootVolumeIOPS < 100 || c.WorkerRootVolumeIOPS > 2000 {
-			return fmt.Errorf("invalid workerRootVolumeIOPS: %d", c.WorkerRootVolumeIOPS)
-		}
-	} else {
-		if c.WorkerRootVolumeIOPS != 0 {
-			return fmt.Errorf("invalid workerRootVolumeIOPS for volume type '%s': %d", c.WorkerRootVolumeType, c.WorkerRootVolumeIOPS)
-		}
+	if c.ControllerCount < 0 {
+		return fmt.Errorf("`controllerCount` must be zero or greater if specified")
+	}
+	// one is the default ControllerCount
+	if c.ControllerCount != 1 && (c.AutoScalingGroup.MinSize != 0 || c.AutoScalingGroup.MaxSize != 0) {
+		return fmt.Errorf("`controller.autoScalingGroup.minSize` and `controller.autoScalingGroup.maxSize` can only be specified without `controllerCount`")
+	}
+	if err := c.AutoScalingGroup.Valid(); err != nil {
+		return err
+	}
 
-		if c.WorkerRootVolumeType != "standard" && c.WorkerRootVolumeType != "gp2" {
-			return fmt.Errorf("invalid workerRootVolumeType: %s", c.WorkerRootVolumeType)
+	return nil
+}
+
+func (c Experimental) Valid() error {
+	for _, taint := range c.Taints {
+		if taint.Effect != "NoSchedule" && taint.Effect != "PreferNoSchedule" {
+			return fmt.Errorf("Effect must be NoSchdule or PreferNoSchedule, but was %s", taint.Effect)
 		}
 	}
 
@@ -828,7 +977,7 @@ func (c *Cluster) ValidateExistingVPC(existingVPCCIDR string, existingSubnetCIDR
 
 		//Loop through all existing subnets in the VPC and look for conflicting CIDRS
 		for _, existingSubnet := range existingSubnets {
-			if cidrOverlap(instanceNet, existingSubnet) {
+			if netutil.CidrOverlap(instanceNet, existingSubnet) {
 				return fmt.Errorf(
 					"instance cidr (%s) conflicts with existing subnet cidr=%s",
 					instanceNet,
@@ -841,24 +990,67 @@ func (c *Cluster) ValidateExistingVPC(existingVPCCIDR string, existingSubnetCIDR
 	return nil
 }
 
-//Return next IP address in network range
-func incrementIP(netIP net.IP) net.IP {
-	ip := make(net.IP, len(netIP))
-	copy(ip, netIP)
+func (c *Cluster) WorkerDeploymentSettings() WorkerDeploymentSettings {
+	return WorkerDeploymentSettings{
+		WorkerSettings:     c.WorkerSettings,
+		DeploymentSettings: c.DeploymentSettings,
+	}
+}
 
-	for j := len(ip) - 1; j >= 0; j-- {
-		ip[j]++
-		if ip[j] > 0 {
-			break
+type WorkerDeploymentSettings struct {
+	WorkerSettings
+	DeploymentSettings
+}
+
+func (c *Cluster) WorkerSecurityGroupRefs() []string {
+	return c.WorkerDeploymentSettings().WorkerSecurityGroupRefs()
+}
+
+func (c WorkerDeploymentSettings) WorkerSecurityGroupRefs() []string {
+	refs := []string{}
+
+	if c.Experimental.LoadBalancer.Enabled {
+		for _, sgId := range c.Experimental.LoadBalancer.SecurityGroupIds {
+			refs = append(refs, fmt.Sprintf(`"%s"`, sgId))
 		}
 	}
 
-	return ip
+	for _, sgId := range c.WorkerSecurityGroupIds {
+		refs = append(refs, fmt.Sprintf(`"%s"`, sgId))
+	}
+
+	return refs
 }
 
-//Does the address space of these networks "a" and "b" overlap?
-func cidrOverlap(a, b *net.IPNet) bool {
-	return a.Contains(b.IP) || b.Contains(a.IP)
+func (c WorkerDeploymentSettings) StackTags() map[string]string {
+	tags := map[string]string{}
+
+	for k, v := range c.DeploymentSettings.StackTags {
+		tags[k] = v
+	}
+
+	if c.Worker.ClusterAutoscaler.Enabled() {
+		tags["kube-aws:cluster-autoscaler:logical-name"] = c.Worker.LogicalName()
+		tags["kube-aws:cluster-autoscaler:min-size"] = strconv.Itoa(c.Worker.ClusterAutoscaler.MinSize)
+		tags["kube-aws:cluster-autoscaler:max-size"] = strconv.Itoa(c.Worker.ClusterAutoscaler.MaxSize)
+	}
+
+	return tags
+}
+
+func (c WorkerDeploymentSettings) Valid() error {
+	sgRefs := c.WorkerSecurityGroupRefs()
+	numSGs := len(sgRefs)
+
+	if numSGs > 4 {
+		return fmt.Errorf("number of user provided security groups must be less than or equal to 4 but was %d (actual EC2 limit is 5 but one of them is reserved for kube-aws) : %v", numSGs, sgRefs)
+	}
+
+	if c.SpotFleet.Enabled() && c.Experimental.WaitSignal.Enabled {
+		return fmt.Errorf("The experimental feature `waitSignal` assumes a node pool is managed by an ASG rather than a Spot Fleet.")
+	}
+
+	return nil
 }
 
 func WithTrailingDot(s string) string {
