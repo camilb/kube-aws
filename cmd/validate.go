@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/coreos/kube-aws/cluster"
-	"github.com/coreos/kube-aws/config"
+	"github.com/coreos/kube-aws/core/root"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +19,7 @@ var (
 
 	validateOpts = struct {
 		awsDebug bool
+		skipWait bool
 		s3URI    string
 	}{}
 )
@@ -41,25 +41,15 @@ func init() {
 }
 
 func runCmdValidate(cmd *cobra.Command, args []string) error {
-	cfg, err := config.ClusterFromFile(configPath)
+	opts := root.NewOptions(validateOpts.s3URI, validateOpts.awsDebug, validateOpts.skipWait)
+
+	cluster, err := root.ClusterFromFile(configPath, opts, validateOpts.awsDebug)
 	if err != nil {
-		return fmt.Errorf("Unable to load cluster config: %v", err)
+		return fmt.Errorf("Failed to initialize cluster driver: %v", err)
 	}
 
-	fmt.Printf("Validating UserData...\n")
-	if err := cfg.ValidateUserData(stackTemplateOptions); err != nil {
-		return err
-	}
-	fmt.Printf("UserData is valid.\n\n")
-
-	fmt.Printf("Validating stack template...\n")
-	data, err := cfg.RenderStackTemplate(stackTemplateOptions, false)
-	if err != nil {
-		return fmt.Errorf("Failed to render stack template: %v", err)
-	}
-
-	cluster := cluster.New(cfg, validateOpts.awsDebug)
-	report, err := cluster.ValidateStack(string(data), validateOpts.s3URI)
+	fmt.Printf("Validating UserData and stack template...\n")
+	report, err := cluster.ValidateStack()
 	if report != "" {
 		fmt.Fprintf(os.Stderr, "Validation Report: %s\n", report)
 	}

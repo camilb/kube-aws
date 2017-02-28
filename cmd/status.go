@@ -3,8 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/coreos/kube-aws/cluster"
-	"github.com/coreos/kube-aws/config"
+	"github.com/coreos/kube-aws/core/root"
 	"github.com/spf13/cobra"
 )
 
@@ -23,11 +22,12 @@ func init() {
 }
 
 func runCmdStatus(cmd *cobra.Command, args []string) error {
-	conf, err := config.ClusterFromFile(configPath)
+	describer, err := root.ClusterDescriberFromFile(configPath)
 	if err != nil {
 		return fmt.Errorf("Failed to read cluster config: %v", err)
 	}
-	info, err := cluster.New(conf, false).Info()
+
+	info, err := describer.Info()
 	if err != nil {
 		return fmt.Errorf("Failed fetching cluster info: %v", err)
 	}
