@@ -17,11 +17,14 @@ type NodePoolConfig struct {
 	SecurityGroupIds   []string               `yaml:"securityGroupIds,omitempty"`
 	Tenancy            string                 `yaml:"tenancy,omitempty"`
 	CustomSettings     map[string]interface{} `yaml:"customSettings,omitempty"`
+	VolumeMounts       []VolumeMount          `yaml:"volumeMounts,omitempty"`
+	UnknownKeys        `yaml:",inline"`
 }
 
 type ClusterAutoscaler struct {
-	MinSize int `yaml:"minSize"`
-	MaxSize int `yaml:"maxSize"`
+	MinSize     int `yaml:"minSize"`
+	MaxSize     int `yaml:"maxSize"`
+	UnknownKeys `yaml:",inline"`
 }
 
 func (a ClusterAutoscaler) Enabled() bool {
@@ -106,6 +109,14 @@ func (c NodePoolConfig) Valid() error {
 		return err
 	}
 
+	if err := ValidateVolumeMounts(c.VolumeMounts); err != nil {
+		return err
+	}
+
+	if c.InstanceType == "t2.micro" || c.InstanceType == "t2.nano" {
+		fmt.Println(`WARNING: instance types "t2.nano" and "t2.micro" are not recommended. See https://github.com/coreos/kube-aws/issues/258 for more information`)
+	}
+
 	return nil
 }
 
@@ -137,5 +148,6 @@ func (c LaunchSpecification) Valid() error {
 	if err := c.RootVolume.Validate(); err != nil {
 		return err
 	}
+
 	return nil
 }

@@ -110,7 +110,7 @@ worker:
 #      # Number of worker nodes to create for an autoscaling group based pool
 #      count: 1
 #      # If omitted, public subnets are created by kube-aws and used for worker nodes
-#      subnet:
+#      subnets:
 #      - # References subnets defined under the top-level `subnets` key by their names
 #        name: ManagedPublicSubnet1
 #      # Auto Scaling Group definition for workers. If only `workerCount` is specified, min and max will be the set to that value and `rollingUpdateMinInstancesInService` will be one less.
@@ -174,8 +174,19 @@ worker:
 #          # Must be within the range between 100 and 2000
 #          # Defaults to worker.spotFleet.unitRootVolumeIOPS * weightedCapacity if omitted
 #          #rootVolumeIOPS:
+#
 #        - weightedCapacity: 2
 #          instanceType: c4.xlarge
+#
+#    #  # Additional EBS volumes mounted on the worker
+#    #  # No additional EBS volumes by default. All parameter values do not default - they must be explicitly defined
+#    #  volumeMounts:
+#    #  - type: "gp2"
+#    #    iops: 0
+#    #    size: 30
+#    #    # Follow the aws convention of '/dev/xvd*' where '*' is a single letter from 'f' to 'z'
+#    #    device: "/dev/xvdf"
+#    #    path: "/ebs"
 #      # Used to provide `/etc/environment` env vars with values from arbitrary CloudFormation refs
 #      awsEnvironment:
 #        enabled: true
@@ -187,10 +198,17 @@ worker:
 #        enabled: true
 #      # Will provision worker nodes with IAM permissions to run cluster-autoscaler
 #      clusterAutoscalerSupport:
-#        enable: true
+#        enabled: true
 #      # This option has not yet been tested with rkt as container runtime
 #      ephemeralImageStorage:
 #        enabled: true
+#
+#      # Existing "glue" security groups attached to worker nodes which are typically used to allow
+#      # access from worker nodes to services running on an existing infrastructure
+#      securityGroupIds:
+#        - sg-1234abcd
+#        - sg-5678efab
+#
 #      # When enabled it will grant sts:assumeRole permission to the IAM roles for worker nodes.
 #      # This is intended to be used in combination with managedIamRoleName. See #297 for more information.
 #      kube2IamSupport:
@@ -240,9 +258,13 @@ worker:
 #      releaseChannel: alpha
 #      amiId:
 #      kubernetesVersion: 1.6.0-alpha.1
-#      hyperkubeImageRepo:
-#      AwsCliImageRepo: quay.io/coreos/awscli
-#      awsCliTag: edge
+
+#      # Images are taken from controlplane by default, but you can override values for node pools here. E.g.:
+#      AwsCliImage:
+#        repo: quay.io/coreos/awscli
+#        tag: edge
+#        rktPullDocker: false
+
 #      sshAuthorizedKeys:
 #      # User-provided YAML map available in control-plane's stack-template.json
 #      customSettings:
@@ -271,11 +293,6 @@ worker:
 # Price (Dollars) to bid for spot instances. Omit for on-demand instances.
 # workerSpotPrice: "0.05"
 
-# Existing "glue" security groups attached to worker nodes which are typically used to allow access from worker nodes to services running on an existing infrastructure
-# workerSecurityGroupIds:
-#   - sg-1234abcd
-#   - sg-5678efab
-
 ## Etcd Cluster config
 ## WARNING: Any changes to etcd parameters after the cluster is first created will not be applied
 ## during a cluster upgrade, due to concerns over data loss.
@@ -291,6 +308,55 @@ worker:
 #    # References subnets defined under the top-level `subnets` key by their names
 #    - name: ManagedPrivateSubnet1
 #    - name: ManagedPrivateSubnet2
+#
+#  # The strategy to provide your etcd nodes, in combination with floating EBS volumes, stable member identities. Defaults to "eip".
+#  #
+#  # Available options: eip, eni
+#  #
+#  # With every option, etcd nodes communicate to each other via their private IPs.
+#  #
+#  # eip: Use EC2 public hostnames stabilized with EIPs and "resolved eventually to private IPs"
+#  #      Requires Amazon DNS (at the second IP of your VPC, e.g. 10.0.0.2) to work.
+#  #      1st recommendation because less moving parts and relatively easy disaster recovery for a single-AZ etcd cluster.
+#  #      If you run a single-AZ etcd cluster and the AZ failed, EBS volumes created from latest snapshots and EIPs can be reused in an another AZ to reproduce your etcd cluster in the AZ.
+#  #
+#  # eni: [EXPERIMENTAL] Use secondary ENIs and Route53 record sets to provide etcd nodes stable hostnames
+#  #      Requires Amazon DNS (at the second IP of your VPC, e.g. 10.0.0.2) or an another DNS which can resolve dns names in the hosted zone managed by kube-aws to work.
+#  #      2nd recommendation because relatively easy disaster recovery for a single-AZ etcd cluster but more moving parts than "eip".
+#  #      If you run a single-AZ etcd cluster and the AZ failed, EBS volumes created from latest snapshots and record sets can be reused in an another AZ to reproduce your etcd cluster in the AZ.
+#  #
+#  memberIdentityProvider: eip
+#
+#  # Domain of the hostname used for etcd peer discovery.
+#  # Used only when `memberIdentityProvider: eni` for TLS key/cert generation
+#  # If omitted, defaults to "ec2.internal" for us-east-1 region and "<region>.compute.internal" otherwise
+#  internalDomainName:
+#
+#  # Set to `false` to disable creation of record sets.
+#  # Used only when `memberIdentityProvider` is set to `eni`
+#  # When disabled, it's your responsibility to configure all the etcd nodes so that
+#  # they can resolve each other's FQDN(specified via the below `etcd.nods[].fqdn` settings) via your DNS(can be the Amazon DNS or your own DNS. Configure it with e.g. coroes-cloudinit)
+#  manageRecordSets:
+#
+#  # Advanced configuration used only when `memberIdentityProvider: eni`
+#  hostedZone:
+#    # The hosted zone where record sets for etcd nodes managed by kube-aws are created
+#    # If omitted, kube-aws creates a hosted zone for you
+#    id:
+#
+#  # CAUTION: Advanced configuration. This should be omitted unless you have very deep knowledge of etcd and kube-aws
+#  nodes:
+#  - # The name of this etcd node. Specified only when you want to customize the etcd member's name shown in ETCD_INITIAL_CLUSTER and ETCD_NAME
+#    name: etcd0
+#    # The FQDN of this etcd node
+#    # Usually this should be omitted so that kube-aws can choose a proper value.
+#    # Specified only when `memberIdentityProvider: eni` and `manageRecordSets: false` i.e.
+#    # it is your responsibility to properly configure EC2 instances to use a DNS which is able to resolve the FQDN.
+#    fqdn: etcd0.<internalDomainName>
+#  - name: etcd1
+#    fqdn: etcd1.<internalDomainName>
+#  - name: etcd2
+#    fqdn: etcd2.<internalDomainName>
 
 # Instance type for etcd node
 # etcdInstanceType: t2.medium
@@ -529,17 +595,100 @@ worker:
 #tlsCADurationDays: 3650
 #tlsCertDurationDays: 365
 
+# Use custom images for kube-aws  and  kubernetes  components. Especially if you are deploying in cn-north-1 where gcr.io is blocked
+# and pulling from quay or dockerhub is slow and you get many timeouts.
+
 # Version of hyperkube image to use. This is the tag for the hyperkube image repository.
-# kubernetesVersion: v1.5.3_coreos.0
+# kubernetesVersion: v1.5.4_coreos.0
 
 # Hyperkube image repository to use.
-# hyperkubeImageRepo: quay.io/coreos/hyperkube
+# hyperkubeImage:
+#   repo: quay.io/coreos/hyperkube
+#   rktPullDocker: false
 
 # AWS CLI image repository to use.
-# awsCliImageRepo: quay.io/coreos/awscli
+# awsCliImage:
+#   repo: quay.io/coreos/awscli
+#   tag: master
+#   rktPullDocker: false
 
-# AWS CLI image tag to use.
-# awsCliTag: master
+# Calico Node image repository to use.
+#calicoNodeImage:
+#  repo: quay.io/calico/node
+#  tag: v1.0.2
+#  rktPullDocker: false
+
+# Calico CNI image repository to use.
+#calicoCniImage:
+#  repo: quay.io/calico/cni
+#  tag: v1.5.6
+#  rktPullDocker: false
+
+# Calico Policy Controller image repository to use.
+#calicoPolicyControllerImage:
+#  repo: quay.io/calico/kube-policy-controller
+#  tag: v0.5.2
+#  rktPullDocker: false
+
+# Cluster Autoscaler image repository to use.
+#clusterAutoscalerImage:
+#  repo: gcr.io/google_containers/cluster-proportional-autoscaler-amd64
+#  tag: 1.0.0
+#  rktPullDocker: false
+
+# kube DNS image repository to use.
+#kubeDnsImage:
+#  repo: gcr.io/google_containers/kubedns-amd64
+#  tag: 1.9
+#  rktPullDocker: false
+
+# kube DNS Masq image repository to use.
+#kubeDnsMasqImage:
+#  repo: gcr.io/google_containers/kube-dnsmasq-amd64
+#  tag: 1.4
+#  rktPullDocker: false
+
+# DNS Masq metrics image repository to use.
+#dnsMasqMetricsImage:
+#  gcr.io/google_containers/dnsmasq-metrics-amd64
+#  tag: 1.0
+#  rktPullDocker: false
+
+# Exec Healthz image repository to use.
+#execHealthzImage:
+#  repo: gcr.io/google_containers/exechealthz-amd64
+#  tag: 1.2
+#  rktPullDocker: false
+
+# Heapster image repository to use.
+#heapsterImage:
+#  repo: gcr.io/google_containers/heapster
+#  tag: v1.3.0
+#  rktPullDocker: false
+
+# Addon Resizer image repository to use.
+#addonResizerImage:
+#  repo: gcr.io/google_containers/addon-resizer
+#  tag: 1.6
+#  rktPullDocker: false
+
+# Kube Dashboard image repository to use.
+#kubeDashboardImage:
+#  repo: gcr.io/google_containers/kubernetes-dashboard-amd64
+#  tag: v1.5.1
+#  rktPullDocker: false
+
+# Calico Controller image repository to use.
+#calicoCtlImage:
+#  repo: calico/ctl
+#  tag: v1.0.0
+#  rktPullDocker: false
+
+# Pause image repository to use.This works only if you are deploying your cluster in "cn-north-1" region.
+#pauseImage:
+#  repo: gcr.io/google_containers/pause-amd64
+#  tag: 3.0
+#  rktPullDocker: false
 
 # Use Calico for network policy.
 # useCalico: false

@@ -19,6 +19,8 @@ type ClusterTester func(c root.Cluster, t *testing.T)
 
 // Integration testing with real AWS services including S3, KMS, CloudFormation
 func TestMainClusterConfig(t *testing.T) {
+	kubeAwsSettings := newKubeAwsSettingsFromEnv(t)
+
 	s3URI, s3URIExists := os.LookupEnv("KUBE_AWS_S3_DIR_URI")
 
 	if !s3URIExists || s3URI == "" {
@@ -117,13 +119,12 @@ func TestMainClusterConfig(t *testing.T) {
 			t.Errorf("experimental settings didn't match :\nexpected=%v\nactual=%v", expected, actual)
 		}
 
-		expected2 := controlplane_config.WaitSignal{
-			Enabled:      true,
-			MaxBatchSize: 1,
+		if !c.WaitSignal.Enabled() {
+			t.Errorf("waitSignal should be enabled but was not: %v", c.WaitSignal)
 		}
-		actual2 := c.WaitSignal
-		if !reflect.DeepEqual(expected2, actual2) {
-			t.Errorf("waitSignal doesn't match:\nexpected=%v\nactual=%v", expected2, actual2)
+
+		if c.WaitSignal.MaxBatchSize() != 1 {
+			t.Errorf("waitSignal.maxBatchSize should be 1 but was %d: %v", c.WaitSignal.MaxBatchSize(), c.WaitSignal)
 		}
 	}
 
@@ -162,43 +163,31 @@ func TestMainClusterConfig(t *testing.T) {
 	}
 
 	spotFleetBasedNodePoolHasWaitSignalDisabled := func(c *config.Config, t *testing.T) {
-		expected := controlplane_config.WaitSignal{
-			Enabled:      false,
-			MaxBatchSize: 1,
-		}
 		p := c.NodePools[0]
 
 		if !p.SpotFleet.Enabled() {
 			t.Errorf("1st node pool is expected to be a spot fleet based one but was not: %+v", p)
 		}
 
-		actual := p.WaitSignal
-		if !reflect.DeepEqual(expected, actual) {
+		if p.WaitSignal.Enabled() {
 			t.Errorf(
-				"WaitSignal didn't match: expected=%v actual=%v",
-				expected,
-				actual,
+				"WaitSignal should be enabled but was not: %v",
+				p.WaitSignal,
 			)
 		}
 	}
 
 	asgBasedNodePoolHasWaitSignalEnabled := func(c *config.Config, t *testing.T) {
-		expected := controlplane_config.WaitSignal{
-			Enabled:      true,
-			MaxBatchSize: 1,
-		}
 		p := c.NodePools[0]
 
 		if p.SpotFleet.Enabled() {
 			t.Errorf("1st node pool is expected to be an asg-based one but was not: %+v", p)
 		}
 
-		actual := p.WaitSignal
-		if !reflect.DeepEqual(expected, actual) {
+		if !p.WaitSignal.Enabled() {
 			t.Errorf(
-				"WaitSignal didn't match: expected=%v actual=%v",
-				expected,
-				actual,
+				"WaitSignal should be disabled but was not: %v",
+				p.WaitSignal,
 			)
 		}
 	}
@@ -286,8 +275,6 @@ func TestMainClusterConfig(t *testing.T) {
 			t.Errorf("Number of NAT gateways(%d) doesn't match with the expexted one: %d", ngwActualNum, ngwExpectedNum)
 		}
 	}
-
-	kubeAwsSettings := newKubeAwsSettingsFromEnv(t)
 
 	hasDefaultCluster := func(c root.Cluster, t *testing.T) {
 		assets, err := c.Assets()
@@ -407,6 +394,452 @@ worker:
 						if !reflect.DeepEqual(expected, actual) {
 							t.Errorf("customSettings didn't match : expected=%v actual=%v", expected, actual)
 						}
+					}
+				},
+			},
+			assertCluster: []ClusterTester{
+				hasDefaultCluster,
+			},
+		},
+		{
+			context: "WithEtcdDataVolumeEncrypted",
+			configYaml: minimalValidConfigYaml + `
+etcdDataVolumeEncrypted: true
+`,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					if !c.EtcdDataVolumeEncrypted {
+						t.Errorf("Etcd data volume should be encrypted but was not: %v", c.Etcd)
+					}
+				},
+			},
+		},
+		{
+			context: "WithEtcdMemberIdentityProviderEIP",
+			configYaml: minimalValidConfigYaml + `
+etcd:
+  memberIdentityProvider: eip
+`,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					subnet1 := model.NewPublicSubnet("us-west-1c", "10.0.0.0/24")
+					subnet1.Name = "Subnet0"
+					expected := controlplane_config.EtcdSettings{
+						Etcd: model.Etcd{
+							Cluster: model.EtcdCluster{
+								MemberIdentityProvider: "eip",
+							},
+							Subnets: []model.Subnet{
+								subnet1,
+							},
+						},
+						EtcdCount:               1,
+						EtcdInstanceType:        "t2.medium",
+						EtcdRootVolumeSize:      30,
+						EtcdRootVolumeType:      "gp2",
+						EtcdRootVolumeIOPS:      0,
+						EtcdDataVolumeSize:      30,
+						EtcdDataVolumeType:      "gp2",
+						EtcdDataVolumeIOPS:      0,
+						EtcdDataVolumeEphemeral: false,
+						EtcdTenancy:             "default",
+					}
+					actual := c.EtcdSettings
+					if !reflect.DeepEqual(expected, actual) {
+						t.Errorf(
+							"EtcdSettings didn't match: expected=%v actual=%v",
+							expected,
+							actual,
+						)
+					}
+
+					if !actual.NodeShouldHaveEIP() {
+						t.Errorf(
+							"NodeShouldHaveEIP returned unexpected value: %v",
+							actual.NodeShouldHaveEIP(),
+						)
+					}
+				},
+			},
+			assertCluster: []ClusterTester{
+				hasDefaultCluster,
+			},
+		},
+		{
+			context: "WithEtcdMemberIdentityProviderENI",
+			configYaml: minimalValidConfigYaml + `
+etcd:
+  memberIdentityProvider: eni
+`,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					subnet1 := model.NewPublicSubnet("us-west-1c", "10.0.0.0/24")
+					subnet1.Name = "Subnet0"
+					expected := controlplane_config.EtcdSettings{
+						Etcd: model.Etcd{
+							Cluster: model.EtcdCluster{
+								MemberIdentityProvider: "eni",
+							},
+							Subnets: []model.Subnet{
+								subnet1,
+							},
+						},
+						EtcdCount:               1,
+						EtcdInstanceType:        "t2.medium",
+						EtcdRootVolumeSize:      30,
+						EtcdRootVolumeType:      "gp2",
+						EtcdRootVolumeIOPS:      0,
+						EtcdDataVolumeSize:      30,
+						EtcdDataVolumeType:      "gp2",
+						EtcdDataVolumeIOPS:      0,
+						EtcdDataVolumeEphemeral: false,
+						EtcdTenancy:             "default",
+					}
+					actual := c.EtcdSettings
+					if !reflect.DeepEqual(expected, actual) {
+						t.Errorf(
+							"EtcdSettings didn't match: expected=%v actual=%v",
+							expected,
+							actual,
+						)
+					}
+
+					if !actual.NodeShouldHaveSecondaryENI() {
+						t.Errorf(
+							"NodeShouldHaveSecondaryENI returned unexpected value: %v",
+							actual.NodeShouldHaveSecondaryENI(),
+						)
+					}
+				},
+			},
+			assertCluster: []ClusterTester{
+				hasDefaultCluster,
+			},
+		},
+		{
+			context: "WithEtcdMemberIdentityProviderENIWithCustomDomain",
+			configYaml: minimalValidConfigYaml + `
+etcd:
+  memberIdentityProvider: eni
+  internalDomainName: internal.example.com
+`,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					subnet1 := model.NewPublicSubnet("us-west-1c", "10.0.0.0/24")
+					subnet1.Name = "Subnet0"
+					expected := controlplane_config.EtcdSettings{
+						Etcd: model.Etcd{
+							Cluster: model.EtcdCluster{
+								MemberIdentityProvider: "eni",
+								InternalDomainName:     "internal.example.com",
+							},
+							Subnets: []model.Subnet{
+								subnet1,
+							},
+						},
+						EtcdCount:               1,
+						EtcdInstanceType:        "t2.medium",
+						EtcdRootVolumeSize:      30,
+						EtcdRootVolumeType:      "gp2",
+						EtcdRootVolumeIOPS:      0,
+						EtcdDataVolumeSize:      30,
+						EtcdDataVolumeType:      "gp2",
+						EtcdDataVolumeIOPS:      0,
+						EtcdDataVolumeEphemeral: false,
+						EtcdTenancy:             "default",
+					}
+					actual := c.EtcdSettings
+					if !reflect.DeepEqual(expected, actual) {
+						t.Errorf(
+							"EtcdSettings didn't match: expected=%v actual=%v",
+							expected,
+							actual,
+						)
+					}
+
+					if !actual.NodeShouldHaveSecondaryENI() {
+						t.Errorf(
+							"NodeShouldHaveSecondaryENI returned unexpected value: %v",
+							actual.NodeShouldHaveSecondaryENI(),
+						)
+					}
+				},
+			},
+			assertCluster: []ClusterTester{
+				hasDefaultCluster,
+			},
+		},
+		{
+			context: "WithEtcdMemberIdentityProviderENIWithCustomFQDNs",
+			configYaml: minimalValidConfigYaml + `
+etcd:
+  memberIdentityProvider: eni
+  internalDomainName: internal.example.com
+  nodes:
+  - fqdn: etcd1a.internal.example.com
+  - fqdn: etcd1b.internal.example.com
+  - fqdn: etcd1c.internal.example.com
+`,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					subnet1 := model.NewPublicSubnet("us-west-1c", "10.0.0.0/24")
+					subnet1.Name = "Subnet0"
+					expected := controlplane_config.EtcdSettings{
+						Etcd: model.Etcd{
+							Cluster: model.EtcdCluster{
+								MemberIdentityProvider: "eni",
+								InternalDomainName:     "internal.example.com",
+							},
+							Nodes: []model.EtcdNode{
+								model.EtcdNode{
+									FQDN: "etcd1a.internal.example.com",
+								},
+								model.EtcdNode{
+									FQDN: "etcd1b.internal.example.com",
+								},
+								model.EtcdNode{
+									FQDN: "etcd1c.internal.example.com",
+								},
+							},
+							Subnets: []model.Subnet{
+								subnet1,
+							},
+						},
+						EtcdCount:               1,
+						EtcdInstanceType:        "t2.medium",
+						EtcdRootVolumeSize:      30,
+						EtcdRootVolumeType:      "gp2",
+						EtcdRootVolumeIOPS:      0,
+						EtcdDataVolumeSize:      30,
+						EtcdDataVolumeType:      "gp2",
+						EtcdDataVolumeIOPS:      0,
+						EtcdDataVolumeEphemeral: false,
+						EtcdTenancy:             "default",
+					}
+					actual := c.EtcdSettings
+					if !reflect.DeepEqual(expected, actual) {
+						t.Errorf(
+							"EtcdSettings didn't match: expected=%v actual=%v",
+							expected,
+							actual,
+						)
+					}
+
+					if !actual.NodeShouldHaveSecondaryENI() {
+						t.Errorf(
+							"NodeShouldHaveSecondaryENI returned unexpected value: %v",
+							actual.NodeShouldHaveSecondaryENI(),
+						)
+					}
+				},
+			},
+			assertCluster: []ClusterTester{
+				hasDefaultCluster,
+			},
+		},
+		{
+			context: "WithEtcdMemberIdentityProviderENIWithCustomNames",
+			configYaml: minimalValidConfigYaml + `
+etcd:
+  memberIdentityProvider: eni
+  internalDomainName: internal.example.com
+  nodes:
+  - name: etcd1a
+  - name: etcd1b
+  - name: etcd1c
+`,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					subnet1 := model.NewPublicSubnet("us-west-1c", "10.0.0.0/24")
+					subnet1.Name = "Subnet0"
+					expected := controlplane_config.EtcdSettings{
+						Etcd: model.Etcd{
+							Cluster: model.EtcdCluster{
+								MemberIdentityProvider: "eni",
+								InternalDomainName:     "internal.example.com",
+							},
+							Nodes: []model.EtcdNode{
+								model.EtcdNode{
+									Name: "etcd1a",
+								},
+								model.EtcdNode{
+									Name: "etcd1b",
+								},
+								model.EtcdNode{
+									Name: "etcd1c",
+								},
+							},
+							Subnets: []model.Subnet{
+								subnet1,
+							},
+						},
+						EtcdCount:               1,
+						EtcdInstanceType:        "t2.medium",
+						EtcdRootVolumeSize:      30,
+						EtcdRootVolumeType:      "gp2",
+						EtcdRootVolumeIOPS:      0,
+						EtcdDataVolumeSize:      30,
+						EtcdDataVolumeType:      "gp2",
+						EtcdDataVolumeIOPS:      0,
+						EtcdDataVolumeEphemeral: false,
+						EtcdTenancy:             "default",
+					}
+					actual := c.EtcdSettings
+					if !reflect.DeepEqual(expected, actual) {
+						t.Errorf(
+							"EtcdSettings didn't match: expected=%v actual=%v",
+							expected,
+							actual,
+						)
+					}
+
+					if !actual.NodeShouldHaveSecondaryENI() {
+						t.Errorf(
+							"NodeShouldHaveSecondaryENI returned unexpected value: %v",
+							actual.NodeShouldHaveSecondaryENI(),
+						)
+					}
+				},
+			},
+			assertCluster: []ClusterTester{
+				hasDefaultCluster,
+			},
+		},
+		{
+			context: "WithEtcdMemberIdentityProviderENIWithoutRecordSets",
+			configYaml: minimalValidConfigYaml + `
+etcd:
+  memberIdentityProvider: eni
+  internalDomainName: internal.example.com
+  manageRecordSets: false
+  nodes:
+  - name: etcd1a
+  - name: etcd1b
+  - name: etcd1c
+`,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					subnet1 := model.NewPublicSubnet("us-west-1c", "10.0.0.0/24")
+					subnet1.Name = "Subnet0"
+					manageRecordSets := false
+					expected := controlplane_config.EtcdSettings{
+						Etcd: model.Etcd{
+							Cluster: model.EtcdCluster{
+								ManageRecordSets:       &manageRecordSets,
+								MemberIdentityProvider: "eni",
+								InternalDomainName:     "internal.example.com",
+							},
+							Nodes: []model.EtcdNode{
+								model.EtcdNode{
+									Name: "etcd1a",
+								},
+								model.EtcdNode{
+									Name: "etcd1b",
+								},
+								model.EtcdNode{
+									Name: "etcd1c",
+								},
+							},
+							Subnets: []model.Subnet{
+								subnet1,
+							},
+						},
+						EtcdCount:               1,
+						EtcdInstanceType:        "t2.medium",
+						EtcdRootVolumeSize:      30,
+						EtcdRootVolumeType:      "gp2",
+						EtcdRootVolumeIOPS:      0,
+						EtcdDataVolumeSize:      30,
+						EtcdDataVolumeType:      "gp2",
+						EtcdDataVolumeIOPS:      0,
+						EtcdDataVolumeEphemeral: false,
+						EtcdTenancy:             "default",
+					}
+					actual := c.EtcdSettings
+					if !reflect.DeepEqual(expected, actual) {
+						t.Errorf(
+							"EtcdSettings didn't match: expected=%v actual=%v",
+							expected,
+							actual,
+						)
+					}
+
+					if !actual.NodeShouldHaveSecondaryENI() {
+						t.Errorf(
+							"NodeShouldHaveSecondaryENI returned unexpected value: %v",
+							actual.NodeShouldHaveSecondaryENI(),
+						)
+					}
+				},
+			},
+			assertCluster: []ClusterTester{
+				hasDefaultCluster,
+			},
+		},
+		{
+			context: "WithEtcdMemberIdentityProviderENIWithHostedZoneID",
+			configYaml: minimalValidConfigYaml + `
+etcd:
+  memberIdentityProvider: eni
+  internalDomainName: internal.example.com
+  hostedZone:
+    id: hostedzone-abcdefg
+  nodes:
+  - name: etcd1a
+  - name: etcd1b
+  - name: etcd1c
+`,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					subnet1 := model.NewPublicSubnet("us-west-1c", "10.0.0.0/24")
+					subnet1.Name = "Subnet0"
+					expected := controlplane_config.EtcdSettings{
+						Etcd: model.Etcd{
+							Cluster: model.EtcdCluster{
+								HostedZone:             model.Identifier{ID: "hostedzone-abcdefg"},
+								MemberIdentityProvider: "eni",
+								InternalDomainName:     "internal.example.com",
+							},
+							Nodes: []model.EtcdNode{
+								model.EtcdNode{
+									Name: "etcd1a",
+								},
+								model.EtcdNode{
+									Name: "etcd1b",
+								},
+								model.EtcdNode{
+									Name: "etcd1c",
+								},
+							},
+							Subnets: []model.Subnet{
+								subnet1,
+							},
+						},
+						EtcdCount:               1,
+						EtcdInstanceType:        "t2.medium",
+						EtcdRootVolumeSize:      30,
+						EtcdRootVolumeType:      "gp2",
+						EtcdRootVolumeIOPS:      0,
+						EtcdDataVolumeSize:      30,
+						EtcdDataVolumeType:      "gp2",
+						EtcdDataVolumeIOPS:      0,
+						EtcdDataVolumeEphemeral: false,
+						EtcdTenancy:             "default",
+					}
+					actual := c.EtcdSettings
+					if !reflect.DeepEqual(expected, actual) {
+						t.Errorf(
+							"EtcdSettings didn't match: expected=%v actual=%v",
+							expected,
+							actual,
+						)
+					}
+
+					if !actual.NodeShouldHaveSecondaryENI() {
+						t.Errorf(
+							"NodeShouldHaveSecondaryENI returned unexpected value: %v",
+							actual.NodeShouldHaveSecondaryENI(),
+						)
 					}
 				},
 			},
@@ -540,7 +973,7 @@ worker:
 					actual := c.Experimental
 
 					if !reflect.DeepEqual(expected, actual) {
-						t.Errorf("experimental settings didn't match : expected=%v actual=%v", expected, actual)
+						t.Errorf("experimental settings didn't match : expected=%+v actual=%+v", expected, actual)
 					}
 
 					p := c.NodePools[0]
@@ -693,6 +1126,61 @@ worker:
 			},
 		},
 		{
+			context: "WithWaitSignalDisabled",
+			configYaml: minimalValidConfigYaml + `
+waitSignal:
+  enabled: false
+`,
+			assertConfig: []ConfigTester{
+				hasDefaultEtcdSettings,
+				func(c *config.Config, t *testing.T) {
+					if c.WaitSignal.Enabled() {
+						t.Errorf("waitSignal should be disabled but was not: %v", c.WaitSignal)
+					}
+				},
+			},
+		},
+		{
+			context: "WithWaitSignalEnabled",
+			configYaml: minimalValidConfigYaml + `
+waitSignal:
+  enabled: true
+`,
+			assertConfig: []ConfigTester{
+				hasDefaultEtcdSettings,
+				func(c *config.Config, t *testing.T) {
+					if !c.WaitSignal.Enabled() {
+						t.Errorf("waitSignal should be enabled but was not: %v", c.WaitSignal)
+					}
+				},
+			},
+		},
+		{
+			context: "WithNodePoolWithWaitSignalDisabled",
+			configYaml: minimalValidConfigYaml + `
+worker:
+  nodePools:
+  - name: pool1
+    waitSignal:
+      enabled: false
+  - name: pool2
+    waitSignal:
+      enabled: false
+      maxBatchSize: 2
+`,
+			assertConfig: []ConfigTester{
+				hasDefaultEtcdSettings,
+				func(c *config.Config, t *testing.T) {
+					if c.NodePools[0].WaitSignal.Enabled() {
+						t.Errorf("waitSignal should be disabled for node pool at index %d but was not", 0)
+					}
+					if c.NodePools[1].WaitSignal.Enabled() {
+						t.Errorf("waitSignal should be disabled for node pool at index %d but was not", 1)
+					}
+				},
+			},
+		},
+		{
 			context: "WithNodePoolWithWaitSignalEnabled",
 			configYaml: minimalValidConfigYaml + `
 worker:
@@ -708,16 +1196,16 @@ worker:
 			assertConfig: []ConfigTester{
 				hasDefaultEtcdSettings,
 				func(c *config.Config, t *testing.T) {
-					if !c.NodePools[0].WaitSignal.Enabled {
+					if !c.NodePools[0].WaitSignal.Enabled() {
 						t.Errorf("waitSignal should be enabled for node pool at index %d but was not", 0)
 					}
-					if c.NodePools[0].WaitSignal.MaxBatchSize != 1 {
+					if c.NodePools[0].WaitSignal.MaxBatchSize() != 1 {
 						t.Errorf("waitSignal.maxBatchSize should be 1 for node pool at index %d but was %d", 0, c.NodePools[0].WaitSignal.MaxBatchSize)
 					}
-					if !c.NodePools[1].WaitSignal.Enabled {
+					if !c.NodePools[1].WaitSignal.Enabled() {
 						t.Errorf("waitSignal should be enabled for node pool at index %d but was not", 1)
 					}
-					if c.NodePools[1].WaitSignal.MaxBatchSize != 2 {
+					if c.NodePools[1].WaitSignal.MaxBatchSize() != 2 {
 						t.Errorf("waitSignal.maxBatchSize should be 2 for node pool at index %d but was %d", 1, c.NodePools[1].WaitSignal.MaxBatchSize)
 					}
 				},
@@ -805,8 +1293,6 @@ vpcId: vpc-1a2b3c4d
 routeTableId: rtb-1a2b3c4d
 # This means that all the subnets created by kube-aws should be private
 mapPublicIPs: false
-# This can't be false because kube-aws won't create public subbnets which are required by an external lb when mapPublicIPs=false
-controllerLoadBalancerPrivate: true
 subnets:
 - availabilityZone: us-west-1a
   instanceCIDR: "10.0.1.0/24"
@@ -878,8 +1364,6 @@ vpcId: vpc-1a2b3c4d
 routeTableId: rtb-1a2b3c4d
 # This means that all the subnets created by kube-aws should be public
 mapPublicIPs: true
-# This can't be true because kube-aws won't create private subnets which are required by an internal lb when mapPublicIPs=true
-controllerLoadBalancerPrivate: false
 # internetGatewayId should be omitted as we assume that the route table specified by routeTableId already contain a route to one
 #internetGatewayId:
 subnets:
@@ -2044,9 +2528,9 @@ etcdDataVolumeIOPS: 104
 				}
 			})
 
-			helper.WithDummyCredentials(func(dummyTlsAssetsDir string) {
+			helper.WithDummyCredentials(func(dummyAssetsDir string) {
 				var stackTemplateOptions = root.NewOptions(s3URI, false, false)
-				stackTemplateOptions.TLSAssetsDir = dummyTlsAssetsDir
+				stackTemplateOptions.AssetsDir = dummyAssetsDir
 				stackTemplateOptions.ControllerTmplFile = "../../core/controlplane/config/templates/cloud-config-controller"
 				stackTemplateOptions.WorkerTmplFile = "../../core/controlplane/config/templates/cloud-config-worker"
 				stackTemplateOptions.EtcdTmplFile = "../../core/controlplane/config/templates/cloud-config-etcd"
@@ -2127,7 +2611,7 @@ worker:
       value: bar
       effect: UnknownEffect
 `,
-			expectedErrorMessage: "Effect must be NoSchdule or PreferNoSchedule, but was UnknownEffect",
+			expectedErrorMessage: "Effect must be NoSchedule or PreferNoSchedule, but was UnknownEffect",
 		},
 		{
 			context: "WithAwsNodeLabelEnabledForTooLongClusterNameAndPoolName",
@@ -2229,6 +2713,82 @@ worker:
         - sg-34567890
 `,
 			expectedErrorMessage: "number of user provided security groups must be less than or equal to 4 but was 5",
+		},
+		{
+			context: "WithUnknownKeyInControlPlane",
+			configYaml: minimalValidConfigYaml + `
+# Must be "nodePools"
+nodePool:
+- name: pool1
+`,
+			expectedErrorMessage: "unknown keys found: nodePool",
+		},
+		{
+			context: "WithUnknownKeyInControlPlaneExperimentals",
+			configYaml: minimalValidConfigYaml + `
+# Settings for an experimental feature must be under the "experimental" field. Ignored.
+nodeDrainer:
+  enabled: true
+`,
+			expectedErrorMessage: "unknown keys found: nodeDrainer",
+		},
+		{
+			context: "WithUnknownKeyInController",
+			configYaml: minimalValidConfigYaml + `
+controller:
+  foo: 1
+`,
+			expectedErrorMessage: "unknown keys found in controller: foo",
+		},
+		{
+			context: "WithUnknownKeyInControllerASG",
+			configYaml: minimalValidConfigYaml + `
+controller:
+  autoScalingGroup:
+    foo: 1
+`,
+			expectedErrorMessage: "unknown keys found in controller.autoScalingGroup: foo",
+		},
+		{
+			context: "WithUnknownKeyInEtcd",
+			configYaml: minimalValidConfigYaml + `
+etcd:
+  foo: 1
+`,
+			expectedErrorMessage: "unknown keys found in etcd: foo",
+		},
+		{
+			context: "WithUnknownKeyInWorkerNodePoolASG",
+			configYaml: minimalValidConfigYaml + `
+worker:
+  nodePools:
+  - name: pool1
+    autoScalingGroup:
+      foo: 1
+`,
+			expectedErrorMessage: "unknown keys found in worker.nodePools[0].autoScalingGroup: foo",
+		},
+		{
+			context: "WithUnknownKeyInWorkerNodePoolSpotFleet",
+			configYaml: minimalValidConfigYaml + `
+worker:
+  nodePools:
+  - name: pool1
+    spotFleet:
+      bar: 1
+`,
+			expectedErrorMessage: "unknown keys found in worker.nodePools[0].spotFleet: bar",
+		},
+		{
+			context: "WithUnknownKeyInWorkerNodePoolCA",
+			configYaml: minimalValidConfigYaml + `
+worker:
+  nodePools:
+  - name: pool1
+    clusterAutoscaler:
+      baz: 1
+`,
+			expectedErrorMessage: "unknown keys found in worker.nodePools[0].clusterAutoscaler: baz",
 		},
 	}
 

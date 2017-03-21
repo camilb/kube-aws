@@ -17,6 +17,13 @@ clusterName: test-cluster-name
 kmsKeyArn: "arn:aws:kms:us-west-1:xxxxxxxxx:key/xxxxxxxxxxxxxxxxxxx"
 `
 
+const minimalChinaConfigYaml = `externalDNSName: test.staging.core-os.net
+keyName: test-key-name
+region: cn-north-1
+availabilityZone: cn-north-1a
+clusterName: test-cluster-name
+`
+
 const availabilityZoneConfig = `
 availabilityZone: us-west-1c
 `
@@ -28,14 +35,12 @@ var goodNetworkingConfigs = []string{
 	`
 vpcCIDR: 10.4.3.0/24
 instanceCIDR: 10.4.3.0/24
-controllerIP: 10.4.3.5
 podCIDR: 172.4.0.0/16
 serviceCIDR: 172.5.0.0/16
 dnsServiceIP: 172.5.100.101
 `, `
 vpcCIDR: 10.4.0.0/16
 instanceCIDR: 10.4.3.0/24
-controllerIP: 10.4.3.5
 podCIDR: 10.6.0.0/16
 serviceCIDR: 10.5.0.0/16
 dnsServiceIP: 10.5.100.101
@@ -46,14 +51,11 @@ routeTableId: rtb-xxxxxx
 vpcId: vpc-xxxxx
 `, `
 createRecordSet: false
-hostedZone: ""
+hostedZoneId: ""
 `, `
 createRecordSet: true
 recordSetTTL: 400
-hostedZone: core-os.net
-`, `
-createRecordSet: true
-hostedZone: "staging.core-os.net"
+hostedZoneId: "XXXXXXXXXXX"
 `, `
 createRecordSet: true
 hostedZoneId: "XXXXXXXXXXX"
@@ -64,7 +66,6 @@ var incorrectNetworkingConfigs = []string{
 	`
 vpcCIDR: 10.4.2.0/23
 instanceCIDR: 10.4.3.0/24
-controllerIP: 10.4.3.5
 podCIDR: 10.4.0.0/16 #podCIDR contains vpcCDIR.
 serviceCIDR: 10.5.0.0/16
 dnsServiceIP: 10.5.100.101
@@ -72,28 +73,24 @@ dnsServiceIP: 10.5.100.101
 	`
 vpcCIDR: 10.4.2.0/23
 instanceCIDR: 10.4.3.0/24
-controllerIP: 10.4.3.5
 podCIDR: 10.5.0.0/16
 serviceCIDR: 10.4.0.0/16 #serviceCIDR contains vpcCDIR.
 dnsServiceIP: 10.4.100.101
 `, `
 vpcCIDR: 10.4.0.0/16
 instanceCIDR: 10.5.3.0/24 #instanceCIDR not in vpcCIDR
-controllerIP: 10.5.3.5
 podCIDR: 10.6.0.0/16
 serviceCIDR: 10.5.0.0/16
 dnsServiceIP: 10.5.100.101
 `, `
 vpcCIDR: 10.4.3.0/16
 instanceCIDR: 10.4.3.0/24
-controllerIP: 10.4.3.5
 podCIDR: 172.4.0.0/16
 serviceCIDR: 172.5.0.0/16
 dnsServiceIP: 172.5.0.1 #dnsServiceIP conflicts with kubernetesServiceIP
 `, `
 vpcCIDR: 10.4.3.0/16
 instanceCIDR: 10.4.3.0/24
-controllerIP: 10.4.3.5
 podCIDR: 10.4.0.0/16 #vpcCIDR overlaps with podCIDR
 serviceCIDR: 172.5.0.0/16
 dnsServiceIP: 172.5.100.101
@@ -101,7 +98,6 @@ dnsServiceIP: 172.5.100.101
 `, `
 vpcCIDR: 10.4.3.0/16
 instanceCIDR: 10.4.3.0/24
-controllerIP: 10.4.3.5
 podCIDR: 172.4.0.0/16
 serviceCIDR: 172.5.0.0/16
 dnsServiceIP: 172.6.100.101 #dnsServiceIP not in service CIDR
@@ -118,10 +114,13 @@ createRecordSet: true
 createRecordSet: false
 recordSetTTL: 400
 `, `
-createRecordSet: true
-recordSetTTL: 60
-hostedZone: staging.core-os.net
+# hostedZoneId should'nt be modified when createRecordSet is false
+createRecordSet: false
 hostedZoneId: /hostedzone/staging_id_2 #hostedZone and hostedZoneId defined
+`, `
+# hostedZone had been deprecated and then dropped
+createRecordSet: true
+hostedZone: "staging.core-os.net"
 `,
 }
 
@@ -141,6 +140,21 @@ func TestNetworkValidation(t *testing.T) {
 		}
 	}
 
+}
+
+func TestMinimalChinaConfig(t *testing.T) {
+	c, err := ClusterFromBytes([]byte(minimalChinaConfigYaml))
+	if err != nil {
+		t.Errorf("Failed to parse config %s: %v", minimalChinaConfigYaml, err)
+	}
+
+	if !c.Region.IsChina() {
+		t.Error("IsChinaRegion test failed.")
+	}
+
+	if c.AssetsEncryptionEnabled() {
+		t.Error("Assets encryption must be disabled on China.")
+	}
 }
 
 func TestKubernetesServiceIPInference(t *testing.T) {
@@ -276,7 +290,6 @@ func TestAvailabilityZones(t *testing.T) {
 			conf: minimalConfigYaml + `
 # You can specify multiple subnets to be created in order to achieve H/A
 vpcCIDR: 10.4.3.0/16
-controllerIP: 10.4.3.50
 subnets:
   - availabilityZone: ap-northeast-1a
     instanceCIDR: 10.4.3.0/24
@@ -317,7 +330,6 @@ func TestMultipleSubnets(t *testing.T) {
 			conf: `
 # You can specify multiple subnets to be created in order to achieve H/A
 vpcCIDR: 10.4.3.0/16
-controllerIP: 10.4.3.50
 subnets:
   - availabilityZone: ap-northeast-1a
     instanceCIDR: 10.4.3.0/24
@@ -341,7 +353,6 @@ subnets:
 			conf: `
 # Given AZ/CIDR, missing subnets fall-back to the single subnet with the AZ/CIDR given.
 vpcCIDR: 10.4.3.0/16
-controllerIP: 10.4.3.50
 availabilityZone: ap-northeast-1a
 instanceCIDR: 10.4.3.0/24
 `,
@@ -357,7 +368,6 @@ instanceCIDR: 10.4.3.0/24
 			conf: `
 # Given AZ/CIDR, empty subnets fall-back to the single subnet with the AZ/CIDR given.
 vpcCIDR: 10.4.3.0/16
-controllerIP: 10.4.3.50
 availabilityZone: ap-northeast-1a
 instanceCIDR: 10.4.3.0/24
 subnets: []
@@ -427,13 +437,6 @@ subnets:
 # Missing AZ like this
 # - availabilityZone: "ap-northeast-1a"
 - instanceCIDR: 10.0.0.0/24
-`,
-		`
-subnets:
-# Both AZ/instanceCIDR is given. This is O.K. but...
-- availabilityZone: "ap-northeast-1a"
-# instanceCIDR does not include the default controllerIP
-- instanceCIDR: 10.0.5.0/24
 `,
 		`
 subnets:
@@ -697,16 +700,6 @@ experimental:
 `,
 			nodeDrainer: NodeDrainer{
 				Enabled: true,
-			},
-		},
-		{
-			conf: `
-# Settings for an experimental feature must be under the "experimental" field. Ignored.
-nodeDrainer:
-  enabled: true
-`,
-			nodeDrainer: NodeDrainer{
-				Enabled: false,
 			},
 		},
 	}

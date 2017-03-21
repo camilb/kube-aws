@@ -12,6 +12,7 @@ import (
 	"github.com/coreos/kube-aws/coreos/amiregistry"
 	"github.com/coreos/kube-aws/filereader/userdatatemplate"
 	"github.com/coreos/kube-aws/model"
+	"github.com/coreos/kube-aws/model/derived"
 	"gopkg.in/yaml.v2"
 	"strconv"
 )
@@ -43,13 +44,13 @@ type DeploymentSettings struct {
 }
 
 type MainClusterSettings struct {
-	EtcdInstances []model.EtcdInstance
+	EtcdNodes []derived.EtcdNode
 }
 
 type StackTemplateOptions struct {
 	WorkerTmplFile        string
 	StackTemplateTmplFile string
-	TLSAssetsDir          string
+	AssetsDir             string
 	PrettyPrint           bool
 	S3URI                 string
 	SkipWait              bool
@@ -63,13 +64,20 @@ func (c ProvidedConfig) StackConfig(opts StackTemplateOptions) (*StackConfig, er
 		return nil, fmt.Errorf("failed to generate config : %v", err)
 	}
 
-	compactAssets, err := cfg.ReadOrCreateCompactTLSAssets(opts.TLSAssetsDir, cfg.KMSConfig{
-		Region:         stackConfig.ComputedConfig.Region,
-		KMSKeyARN:      c.KMSKeyARN,
-		EncryptService: c.providedEncryptService,
-	})
+	if stackConfig.ManageCertificates {
+		if stackConfig.ComputedConfig.AssetsEncryptionEnabled() {
+			compactAssets, _ := cfg.ReadOrCreateCompactTLSAssets(opts.AssetsDir, cfg.KMSConfig{
+				Region:         stackConfig.ComputedConfig.Region,
+				KMSKeyARN:      c.KMSKeyARN,
+				EncryptService: c.providedEncryptService,
+			})
 
-	stackConfig.ComputedConfig.TLSConfig = compactAssets
+			stackConfig.ComputedConfig.TLSConfig = compactAssets
+		} else {
+			rawAssets, _ := cfg.ReadOrCreateUnecryptedCompactTLSAssets(opts.AssetsDir)
+			stackConfig.ComputedConfig.TLSConfig = rawAssets
+		}
+	}
 
 	if stackConfig.UserDataWorker, err = userdatatemplate.GetString(opts.WorkerTmplFile, stackConfig.ComputedConfig); err != nil {
 		return nil, fmt.Errorf("failed to render worker cloud config: %v", err)
@@ -81,7 +89,8 @@ func (c ProvidedConfig) StackConfig(opts StackTemplateOptions) (*StackConfig, er
 	stackConfig.S3URI = fmt.Sprintf("%s/kube-aws/clusters/%s/exported/stacks", baseS3URI, c.ClusterName)
 
 	if opts.SkipWait {
-		stackConfig.WaitSignal.Enabled = false
+		enabled := false
+		stackConfig.WaitSignal.EnabledOverride = &enabled
 	}
 
 	return &stackConfig, nil
@@ -90,14 +99,6 @@ func (c ProvidedConfig) StackConfig(opts StackTemplateOptions) (*StackConfig, er
 func newDefaultCluster() *ProvidedConfig {
 	return &ProvidedConfig{
 		WorkerNodePoolConfig: NewWorkerNodePoolConfig(),
-		DeploymentSettings: DeploymentSettings{
-			DeploymentSettings: cfg.DeploymentSettings{
-				WaitSignal: cfg.WaitSignal{
-					Enabled:      true,
-					MaxBatchSize: 1,
-				},
-			},
-		},
 	}
 }
 
@@ -124,11 +125,9 @@ func (c *ProvidedConfig) Load(main *cfg.Config) error {
 	if c.Count == nil {
 		c.Count = defaults.Count
 	}
-	if !c.WaitSignal.Enabled {
-		c.WaitSignal = defaults.WaitSignal
-	}
 	if c.SpotFleet.Enabled() {
-		c.WaitSignal.Enabled = false
+		enabled := false
+		c.WaitSignal.EnabledOverride = &enabled
 	}
 
 	c.WorkerNodePoolConfig = c.WorkerNodePoolConfig.WithDefaultsFrom(main.DefaultWorkerSettings)
@@ -178,7 +177,7 @@ define one or more public subnets in cluster.yaml or explicitly reference privat
 		}
 	}
 
-	c.EtcdInstances = main.EtcdInstances
+	c.EtcdNodes = main.EtcdNodes
 
 	return nil
 }
@@ -197,7 +196,7 @@ func (c ProvidedConfig) Config() (*ComputedConfig, error) {
 
 	if c.AmiId == "" {
 		var err error
-		if config.AMI, err = amiregistry.GetAMI(config.Region, config.ReleaseChannel); err != nil {
+		if config.AMI, err = amiregistry.GetAMI(config.Region.String(), config.ReleaseChannel); err != nil {
 			return nil, fmt.Errorf("failed getting AMI for config: %v", err)
 		}
 	} else {

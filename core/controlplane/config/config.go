@@ -15,85 +15,99 @@ import (
 	"github.com/coreos/kube-aws/coreos/amiregistry"
 	"github.com/coreos/kube-aws/filereader/userdatatemplate"
 	"github.com/coreos/kube-aws/model"
+	"github.com/coreos/kube-aws/model/derived"
 	"github.com/coreos/kube-aws/netutil"
 	yaml "gopkg.in/yaml.v2"
 )
 
 const (
+	k8sVer = "v1.5.4_coreos.0"
+
 	credentialsDir = "credentials"
 	userDataDir    = "userdata"
 )
 
 func NewDefaultCluster() *Cluster {
 	experimental := Experimental{
-		Admission{
+		Admission: Admission{
 			PodSecurityPolicy{
 				Enabled: false,
 			},
 		},
-		AuditLog{
+		AuditLog: AuditLog{
 			Enabled: false,
 			MaxAge:  30,
 			LogPath: "/dev/stdout",
 		},
-		Authentication{
+		Authentication: Authentication{
 			Webhook{
 				Enabled:  false,
 				CacheTTL: "5m0s",
 				Config:   "",
 			},
 		},
-		AwsEnvironment{
+		AwsEnvironment: AwsEnvironment{
 			Enabled: false,
 		},
-		AwsNodeLabels{
+		AwsNodeLabels: AwsNodeLabels{
 			Enabled: false,
 		},
-		ClusterAutoscalerSupport{
+		ClusterAutoscalerSupport: ClusterAutoscalerSupport{
 			Enabled: false,
 		},
-		EphemeralImageStorage{
+		EphemeralImageStorage: EphemeralImageStorage{
 			Enabled:    false,
 			Disk:       "xvdb",
 			Filesystem: "xfs",
 		},
-		Kube2IamSupport{
+		Kube2IamSupport: Kube2IamSupport{
 			Enabled: false,
 		},
-		LoadBalancer{
+		LoadBalancer: LoadBalancer{
 			Enabled: false,
 		},
-		TargetGroup{
+		TargetGroup: TargetGroup{
 			Enabled: false,
 		},
-		NodeDrainer{
+		NodeDrainer: NodeDrainer{
 			Enabled: false,
 		},
-		NodeLabels{},
-		Plugins{
-			Rbac{
+		NodeLabels: NodeLabels{},
+		Plugins: Plugins{
+			Rbac: Rbac{
 				Enabled: false,
 			},
 		},
-		[]Taint{},
+		Taints: []Taint{},
 	}
 
 	return &Cluster{
 		DeploymentSettings: DeploymentSettings{
-			ClusterName:        "kubernetes",
-			VPCCIDR:            "10.0.0.0/16",
-			ReleaseChannel:     "stable",
-			K8sVer:             "v1.5.3_coreos.0",
-			HyperkubeImageRepo: "quay.io/coreos/hyperkube",
-			AWSCliImageRepo:    "quay.io/coreos/awscli",
-			AWSCliTag:          "master",
-			ContainerRuntime:   "docker",
-			Subnets:            []model.Subnet{},
-			EIPAllocationIDs:   []string{},
-			MapPublicIPs:       true,
-			Experimental:       experimental,
-			ManageCertificates: true,
-			WaitSignal:         WaitSignal{Enabled: true, MaxBatchSize: 1},
+			ClusterName:                 "kubernetes",
+			VPCCIDR:                     "10.0.0.0/16",
+			ReleaseChannel:              "stable",
+			K8sVer:                      k8sVer,
+			ContainerRuntime:            "docker",
+			Subnets:                     []model.Subnet{},
+			EIPAllocationIDs:            []string{},
+			MapPublicIPs:                true,
+			Experimental:                experimental,
+			ManageCertificates:          true,
+			HyperkubeImage:              model.Image{Repo: "quay.io/coreos/hyperkube", Tag: k8sVer, RktPullDocker: false},
+			AWSCliImage:                 model.Image{Repo: "quay.io/coreos/awscli", Tag: "master", RktPullDocker: false},
+			CalicoNodeImage:             model.Image{Repo: "quay.io/calico/node", Tag: "v1.0.2", RktPullDocker: false},
+			CalicoCniImage:              model.Image{Repo: "quay.io/calico/cni", Tag: "v1.5.6", RktPullDocker: false},
+			CalicoPolicyControllerImage: model.Image{Repo: "quay.io/calico/kube-policy-controller", Tag: "v0.5.2", RktPullDocker: false},
+			ClusterAutoscalerImage:      model.Image{Repo: "gcr.io/google_containers/cluster-proportional-autoscaler-amd64", Tag: "1.0.0", RktPullDocker: false},
+			KubeDnsImage:                model.Image{Repo: "gcr.io/google_containers/kubedns-amd64", Tag: "1.9", RktPullDocker: false},
+			KubeDnsMasqImage:            model.Image{Repo: "gcr.io/google_containers/kube-dnsmasq-amd64", Tag: "1.4", RktPullDocker: false},
+			DnsMasqMetricsImage:         model.Image{Repo: "gcr.io/google_containers/dnsmasq-metrics-amd64", Tag: "1.0", RktPullDocker: false},
+			ExecHealthzImage:            model.Image{Repo: "gcr.io/google_containers/exechealthz-amd64", Tag: "1.2", RktPullDocker: false},
+			HeapsterImage:               model.Image{Repo: "gcr.io/google_containers/heapster", Tag: "v1.3.0", RktPullDocker: false},
+			AddonResizerImage:           model.Image{Repo: "gcr.io/google_containers/addon-resizer", Tag: "1.6", RktPullDocker: false},
+			KubeDashboardImage:          model.Image{Repo: "gcr.io/google_containers/kubernetes-dashboard-amd64", Tag: "v1.5.1", RktPullDocker: false},
+			CalicoCtlImage:              model.Image{Repo: "calico/ctl", Tag: "v1.0.0", RktPullDocker: false},
+			PauseImage:                  model.Image{Repo: "gcr.io/google_containers/pause-amd64", Tag: "3.0", RktPullDocker: false},
 		},
 		KubeClusterSettings: KubeClusterSettings{
 			DNSServiceIP: "10.3.0.10",
@@ -145,6 +159,7 @@ func NewDefaultCluster() *Cluster {
 
 func newDefaultClusterWithDeps(encSvc EncryptService) *Cluster {
 	cluster := NewDefaultCluster()
+	cluster.HyperkubeImage.Tag = cluster.K8sVer
 	cluster.ProvidedEncryptService = encSvc
 	return cluster
 }
@@ -169,6 +184,7 @@ func ClusterFromBytes(data []byte) (*Cluster, error) {
 	if err := yaml.Unmarshal(data, c); err != nil {
 		return nil, fmt.Errorf("failed to parse cluster: %v", err)
 	}
+	c.HyperkubeImage.Tag = c.K8sVer
 
 	if err := c.Load(); err != nil {
 		return nil, err
@@ -190,10 +206,6 @@ func ConfigFromBytes(data []byte) (*Config, error) {
 }
 
 func (c *Cluster) Load() error {
-	// HostedZone needs to end with a '.', amazon will not append it for you.
-	// as it will with RecordSets
-	c.HostedZone = WithTrailingDot(c.HostedZone)
-
 	// If the user specified no subnets, we assume that a single AZ configuration with the default instanceCIDR is demanded
 	if len(c.Subnets) == 0 && c.InstanceCIDR == "" {
 		c.InstanceCIDR = "10.0.0.0/24"
@@ -315,8 +327,7 @@ type KubeClusterSettings struct {
 
 // Part of configuration which can't be provided via user input but is computed from user input
 type ComputedDeploymentSettings struct {
-	AMI           string
-	IsChinaRegion bool
+	AMI string
 }
 
 // Part of configuration which can be customized for each type/group of nodes(etcd/controller/worker/) by its nature.
@@ -331,22 +342,19 @@ type ComputedDeploymentSettings struct {
 // Though it is highly configurable, it's basically users' responsibility to provide `correct` values if they're going beyond the defaults.
 type DeploymentSettings struct {
 	ComputedDeploymentSettings
-	ClusterName       string `yaml:"clusterName,omitempty"`
-	KeyName           string `yaml:"keyName,omitempty"`
-	Region            string `yaml:"region,omitempty"`
-	AvailabilityZone  string `yaml:"availabilityZone,omitempty"`
-	ReleaseChannel    string `yaml:"releaseChannel,omitempty"`
-	AmiId             string `yaml:"amiId,omitempty"`
-	VPCID             string `yaml:"vpcId,omitempty"`
-	InternetGatewayID string `yaml:"internetGatewayId,omitempty"`
-	RouteTableID      string `yaml:"routeTableId,omitempty"`
+	ClusterName       string       `yaml:"clusterName,omitempty"`
+	KeyName           string       `yaml:"keyName,omitempty"`
+	Region            model.Region `yaml:",inline"`
+	AvailabilityZone  string       `yaml:"availabilityZone,omitempty"`
+	ReleaseChannel    string       `yaml:"releaseChannel,omitempty"`
+	AmiId             string       `yaml:"amiId,omitempty"`
+	VPCID             string       `yaml:"vpcId,omitempty"`
+	InternetGatewayID string       `yaml:"internetGatewayId,omitempty"`
+	RouteTableID      string       `yaml:"routeTableId,omitempty"`
 	// Required for validations like e.g. if instance cidr is contained in vpc cidr
 	VPCCIDR             string            `yaml:"vpcCIDR,omitempty"`
 	InstanceCIDR        string            `yaml:"instanceCIDR,omitempty"`
 	K8sVer              string            `yaml:"kubernetesVersion,omitempty"`
-	HyperkubeImageRepo  string            `yaml:"hyperkubeImageRepo,omitempty"`
-	AWSCliImageRepo     string            `yaml:"awsCliImageRepo,omitempty"`
-	AWSCliTag           string            `yaml:"awsCliTag,omitempty"`
 	ContainerRuntime    string            `yaml:"containerRuntime,omitempty"`
 	KMSKeyARN           string            `yaml:"kmsKeyArn,omitempty"`
 	StackTags           map[string]string `yaml:"stackTags,omitempty"`
@@ -358,6 +366,23 @@ type DeploymentSettings struct {
 	Experimental        Experimental      `yaml:"experimental"`
 	ManageCertificates  bool              `yaml:"manageCertificates,omitempty"`
 	WaitSignal          WaitSignal        `yaml:"waitSignal"`
+
+	// Images repository
+	HyperkubeImage              model.Image `yaml:"hyperkubeImage,omitempty"`
+	AWSCliImage                 model.Image `yaml:"awsCliImage,omitempty"`
+	CalicoNodeImage             model.Image `yaml:"calicoNodeImage,omitempty"`
+	CalicoCniImage              model.Image `yaml:"calicoCniImage,omitempty"`
+	CalicoCtlImage              model.Image `yaml:"calicoCtlImage,omitempty"`
+	CalicoPolicyControllerImage model.Image `yaml:"calicoPolicyControllerImage,omitempty"`
+	ClusterAutoscalerImage      model.Image `yaml:"clusterAutoscalerImage,omitempty"`
+	KubeDnsImage                model.Image `yaml:"kubeDnsImage,omitempty"`
+	KubeDnsMasqImage            model.Image `yaml:"kubeDnsMasqImage,omitempty"`
+	DnsMasqMetricsImage         model.Image `yaml:"dnsMasqMetricsImage,omitempty"`
+	ExecHealthzImage            model.Image `yaml:"execHealthzImage,omitempty"`
+	HeapsterImage               model.Image `yaml:"heapsterImage,omitempty"`
+	AddonResizerImage           model.Image `yaml:"addonResizerImage,omitempty"`
+	KubeDashboardImage          model.Image `yaml:"kubeDashboardImage,omitempty"`
+	PauseImage                  model.Image `yaml:"pauseImage,omitempty"`
 }
 
 // Part of configuration which is specific to worker nodes
@@ -419,7 +444,6 @@ type Cluster struct {
 	RecordSetTTL           int    `yaml:"recordSetTTL,omitempty"`
 	TLSCADurationDays      int    `yaml:"tlsCADurationDays,omitempty"`
 	TLSCertDurationDays    int    `yaml:"tlsCertDurationDays,omitempty"`
-	HostedZone             string `yaml:"hostedZone,omitempty"`
 	HostedZoneID           string `yaml:"hostedZoneId,omitempty"`
 	ProvidedEncryptService EncryptService
 	CustomSettings         map[string]interface{} `yaml:"customSettings,omitempty"`
@@ -440,6 +464,7 @@ type Experimental struct {
 	NodeLabels               NodeLabels               `yaml:"nodeLabels"`
 	Plugins                  Plugins                  `yaml:"plugins"`
 	Taints                   []Taint                  `yaml:"taints"`
+	model.UnknownKeys        `yaml:",inline"`
 }
 
 type Admission struct {
@@ -539,25 +564,24 @@ func (t Taint) String() string {
 }
 
 type WaitSignal struct {
-	Enabled      bool `yaml:"enabled"`
-	MaxBatchSize int  `yaml:"maxBatchSize"`
+	// WaitSignal is enabled by default. If you'd like to explicitly disable it, set this to `false`.
+	// Keeping this `nil` results in the WaitSignal to be enabled.
+	EnabledOverride      *bool `yaml:"enabled"`
+	MaxBatchSizeOverride *int  `yaml:"maxBatchSize"`
 }
 
-func (s *WaitSignal) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	aux := struct {
-		Enabled      bool `yaml:"enabled"`
-		MaxBatchSize int  `yaml:"maxBatchSize"`
-	}{
-		Enabled:      true,
-		MaxBatchSize: 1,
+func (s WaitSignal) Enabled() bool {
+	if s.EnabledOverride != nil {
+		return *s.EnabledOverride
 	}
-	if err := unmarshal(&aux); err != nil {
-		return err
-	}
+	return true
+}
 
-	s.Enabled = aux.Enabled
-	s.MaxBatchSize = aux.MaxBatchSize
-	return nil
+func (s WaitSignal) MaxBatchSize() int {
+	if s.MaxBatchSizeOverride != nil {
+		return *s.MaxBatchSizeOverride
+	}
+	return 1
 }
 
 const (
@@ -623,39 +647,17 @@ func (c Cluster) Config() (*Config, error) {
 
 	if c.AmiId == "" {
 		var err error
-		if config.AMI, err = amiregistry.GetAMI(config.Region, config.ReleaseChannel); err != nil {
+		if config.AMI, err = amiregistry.GetAMI(config.Region.String(), config.ReleaseChannel); err != nil {
 			return nil, fmt.Errorf("failed getting AMI for config: %v", err)
 		}
 	} else {
 		config.AMI = c.AmiId
 	}
 
-	config.EtcdInstances = make([]model.EtcdInstance, config.EtcdCount)
-
-	for etcdIndex := 0; etcdIndex < config.EtcdCount; etcdIndex++ {
-
-		//Round-robin etcd instances across all available subnets
-		subnetIndex := etcdIndex % len(config.Etcd.Subnets)
-		subnet := config.Etcd.Subnets[subnetIndex]
-
-		var instance model.EtcdInstance
-
-		if subnet.ManageNATGateway() {
-			ngw, err := c.FindNATGatewayForPrivateSubnet(subnet)
-
-			if err != nil {
-				return nil, fmt.Errorf("failed getting a NAT gateway for the subnet %s in %v: %v", subnet.LogicalName(), c.NATGateways(), err)
-			}
-
-			instance = model.NewEtcdInstanceDependsOnNewlyCreatedNGW(subnet, *ngw)
-		} else {
-			instance = model.NewEtcdInstance(subnet)
-		}
-
-		config.EtcdInstances[etcdIndex] = instance
-
-		//http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-instance-addressing.html#concepts-private-addresses
-
+	var err error
+	config.EtcdNodes, err = derived.NewEtcdNodes(c.Etcd.Nodes, c.EtcdCluster())
+	if err != nil {
+		return nil, fmt.Errorf("failed to derived etcd nodes configuration: %v", err)
 	}
 
 	// Populate top-level subnets to model
@@ -665,9 +667,12 @@ func (c Cluster) Config() (*Config, error) {
 		}
 	}
 
-	config.IsChinaRegion = strings.HasPrefix(config.Region, "cn")
-
 	return &config, nil
+}
+
+func (c *Cluster) EtcdCluster() derived.EtcdCluster {
+	etcdNetwork := derived.NewNetwork(c.Etcd.Subnets, c.NATGateways())
+	return derived.NewEtcdCluster(c.Etcd.Cluster, c.Region, etcdNetwork, c.EtcdCount)
 }
 
 // releaseVersionIsGreaterThan will return true if the supplied version is greater then
@@ -697,7 +702,7 @@ func releaseVersionIsGreaterThan(minVersion semver.Version, release string) (boo
 }
 
 type StackTemplateOptions struct {
-	TLSAssetsDir          string
+	AssetsDir             string
 	ControllerTmplFile    string
 	EtcdTmplFile          string
 	StackTemplateTmplFile string
@@ -714,24 +719,53 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 		return nil, err
 	}
 
-	var compactAssets *CompactTLSAssets
+	// TODO: Check if new tests are needed to verify the auth token file is handled correctly
 
 	if c.ManageCertificates {
-		compactAssets, err = ReadOrCreateCompactTLSAssets(opts.TLSAssetsDir, KMSConfig{
-			Region:         stackConfig.Config.Region,
-			KMSKeyARN:      c.KMSKeyARN,
-			EncryptService: c.ProvidedEncryptService,
-		})
-		if err != nil {
-			return nil, err
+		if c.AssetsEncryptionEnabled() {
+			var compactAssets *CompactTLSAssets
+			var compactAuthTokens *CompactAuthTokens
+
+			compactAssets, err = ReadOrCreateCompactTLSAssets(opts.AssetsDir, KMSConfig{
+				Region:         stackConfig.Config.Region,
+				KMSKeyARN:      c.KMSKeyARN,
+				EncryptService: c.ProvidedEncryptService,
+			})
+			if err != nil {
+				return nil, err
+			}
+
+			compactAuthTokens, err = ReadOrCreateCompactAuthTokens(opts.AssetsDir, KMSConfig{
+				Region:         stackConfig.Config.Region,
+				KMSKeyARN:      c.KMSKeyARN,
+				EncryptService: c.ProvidedEncryptService,
+			})
+			if err != nil {
+				return nil, err
+			}
+
+			stackConfig.Config.TLSConfig = compactAssets
+			stackConfig.Config.AuthTokensConfig = compactAuthTokens
+		} else {
+			rawAssets, err := ReadOrCreateUnecryptedCompactTLSAssets(opts.AssetsDir)
+			if err != nil {
+				return nil, err
+			}
+
+			rawAuthTokens, err := ReadOrCreateUnecryptedCompactAuthTokens(opts.AssetsDir)
+			if err != nil {
+				return nil, err
+			}
+
+			stackConfig.Config.TLSConfig = rawAssets
+			stackConfig.Config.AuthTokensConfig = rawAuthTokens
 		}
-		stackConfig.Config.TLSConfig = compactAssets
 	}
 
 	if stackConfig.UserDataController, err = userdatatemplate.GetString(opts.ControllerTmplFile, stackConfig.Config); err != nil {
 		return nil, fmt.Errorf("failed to render controller cloud config: %v", err)
 	}
-	if stackConfig.userDataEtcd, err = userdatatemplate.GetString(opts.EtcdTmplFile, stackConfig.Config); err != nil {
+	if stackConfig.UserDataEtcd, err = userdatatemplate.GetString(opts.EtcdTmplFile, stackConfig.Config); err != nil {
 		return nil, fmt.Errorf("failed to render etcd cloud config: %v", err)
 	}
 
@@ -741,7 +775,8 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 	stackConfig.S3URI = fmt.Sprintf("%s/kube-aws/clusters/%s/exported/stacks", baseS3URI, c.ClusterName)
 
 	if opts.SkipWait {
-		stackConfig.WaitSignal.Enabled = false
+		enabled := false
+		stackConfig.WaitSignal.EnabledOverride = &enabled
 	}
 
 	return &stackConfig, nil
@@ -750,7 +785,10 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 type Config struct {
 	Cluster
 
-	EtcdInstances []model.EtcdInstance
+	EtcdNodes []derived.EtcdNode
+
+	// Encoded auth tokens
+	AuthTokensConfig *CompactAuthTokens
 
 	// Encoded TLS assets
 	TLSConfig *CompactTLSAssets
@@ -762,6 +800,18 @@ type Config struct {
 // This is NOT intended to be used to reference stack name from cloud-config as the target of awscli or cfn-bootstrap-tools commands e.g. `cfn-init` and `cfn-signal`
 func (c Cluster) StackName() string {
 	return "control-plane"
+}
+
+func (c Cluster) StackNameEnvVarName() string {
+	return "KUBE_AWS_STACK_NAME"
+}
+
+func (c Cluster) EtcdNodeEnvFileName() string {
+	return "/var/run/coreos/etcd-node.env"
+}
+
+func (c Cluster) EtcdIndexEnvVarName() string {
+	return "KUBE_AWS_ETCD_INDEX"
 }
 
 func (c Config) VPCLogicalName() string {
@@ -790,15 +840,8 @@ func (c Config) InternetGatewayRef() string {
 
 func (c Cluster) valid() error {
 	if c.CreateRecordSet {
-		if c.HostedZone == "" && c.HostedZoneID == "" {
-			return errors.New("hostedZone or hostedZoneID must be specified createRecordSet is true")
-		}
-		if c.HostedZone != "" && c.HostedZoneID != "" {
-			return errors.New("hostedZone and hostedZoneID cannot both be specified")
-		}
-
-		if c.HostedZone != "" {
-			fmt.Printf("Warning: the 'hostedZone' parameter is deprecated. Use 'hostedZoneId' instead\n")
+		if c.HostedZoneID == "" {
+			return errors.New("hostedZoneID must be specified when createRecordSet is true")
 		}
 
 		if c.RecordSetTTL < 1 {
@@ -808,6 +851,12 @@ func (c Cluster) valid() error {
 		if c.RecordSetTTL != NewDefaultCluster().RecordSetTTL {
 			return errors.New(
 				"recordSetTTL should not be modified when createRecordSet is false",
+			)
+		}
+
+		if c.HostedZoneID != "" {
+			return errors.New(
+				"hostedZoneId should not be modified when createRecordSet is false",
 			)
 		}
 	}
@@ -881,6 +930,10 @@ func (c Cluster) valid() error {
 		return fmt.Errorf("awsNodeLabels can't be enabled for controllers because the total number of characters in clusterName(=\"%s\") exceeds the limit of %d", c.ClusterName, limit)
 	}
 
+	if c.ControllerInstanceType == "t2.micro" || c.EtcdInstanceType == "t2.micro" || c.ControllerInstanceType == "t2.nano" || c.EtcdInstanceType == "t2.nano" {
+		fmt.Println(`WARNING: instance types "t2.nano" and "t2.micro" are not recommended. See https://github.com/coreos/kube-aws/issues/258 for more information`)
+	}
+
 	return nil
 }
 
@@ -917,7 +970,7 @@ func (c DeploymentSettings) Valid() (*DeploymentValidationResult, error) {
 	if c.ClusterName == "" {
 		return nil, errors.New("clusterName must be set")
 	}
-	if c.KMSKeyARN == "" && c.ManageCertificates {
+	if c.KMSKeyARN == "" && c.AssetsEncryptionEnabled() {
 		return nil, errors.New("kmsKeyArn must be set")
 	}
 
@@ -925,7 +978,7 @@ func (c DeploymentSettings) Valid() (*DeploymentValidationResult, error) {
 		return nil, errors.New("vpcId must be specified if routeTableId or internetGatewayId are specified")
 	}
 
-	if c.Region == "" {
+	if c.Region.IsEmpty() {
 		return nil, errors.New("region must be set")
 	}
 
@@ -1016,6 +1069,10 @@ func (c DeploymentSettings) Valid() (*DeploymentValidationResult, error) {
 	}
 
 	return &DeploymentValidationResult{vpcNet: vpcNet}, nil
+}
+
+func (c DeploymentSettings) AssetsEncryptionEnabled() bool {
+	return c.ManageCertificates && c.Region.SupportsKMS()
 }
 
 func (s DeploymentSettings) AllSubnets() []model.Subnet {
@@ -1147,7 +1204,7 @@ func (c ControllerSettings) Valid() error {
 func (c Experimental) Valid() error {
 	for _, taint := range c.Taints {
 		if taint.Effect != "NoSchedule" && taint.Effect != "PreferNoSchedule" {
-			return fmt.Errorf("Effect must be NoSchdule or PreferNoSchedule, but was %s", taint.Effect)
+			return fmt.Errorf("Effect must be NoSchedule or PreferNoSchedule, but was %s", taint.Effect)
 		}
 	}
 

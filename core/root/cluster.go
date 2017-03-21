@@ -115,7 +115,7 @@ func ClusterFromFile(configPath string, opts options, awsDebug bool) (Cluster, e
 
 func ClusterFromConfig(cfg *config.Config, opts options, awsDebug bool) (Cluster, error) {
 	cpOpts := controlplane_cfg.StackTemplateOptions{
-		TLSAssetsDir:          opts.TLSAssetsDir,
+		AssetsDir:             opts.AssetsDir,
 		ControllerTmplFile:    opts.ControllerTmplFile,
 		EtcdTmplFile:          opts.EtcdTmplFile,
 		StackTemplateTmplFile: opts.ControlPlaneStackTemplateTmplFile,
@@ -130,7 +130,7 @@ func ClusterFromConfig(cfg *config.Config, opts options, awsDebug bool) (Cluster
 	nodePools := []*nodepool.Cluster{}
 	for i, c := range cfg.NodePools {
 		npOpts := nodepool_cfg.StackTemplateOptions{
-			TLSAssetsDir:          opts.TLSAssetsDir,
+			AssetsDir:             opts.AssetsDir,
 			WorkerTmplFile:        opts.WorkerTmplFile,
 			StackTemplateTmplFile: opts.NodePoolStackTemplateTmplFile,
 			PrettyPrint:           opts.PrettyPrint,
@@ -144,7 +144,7 @@ func ClusterFromConfig(cfg *config.Config, opts options, awsDebug bool) (Cluster
 		nodePools = append(nodePools, np)
 	}
 	awsConfig := aws.NewConfig().
-		WithRegion(cfg.Region).
+		WithRegion(cfg.Region.String()).
 		WithCredentialsChainVerboseErrors(true)
 
 	if awsDebug {
@@ -220,7 +220,7 @@ func (c clusterImpl) Assets() (cfnstack.Assets, error) {
 		c.controlPlane.ClusterName,
 	)
 
-	assets := cfnstack.NewAssetsBuilder(c.stackName(), s3URI).Add(REMOTE_STACK_TEMPLATE_FILENAME, stackTemplate).Build()
+	assets := cfnstack.NewAssetsBuilder(c.stackName(), s3URI, c.controlPlane.Region).Add(REMOTE_STACK_TEMPLATE_FILENAME, stackTemplate).Build()
 
 	cpAssets, err := c.controlPlane.Assets()
 	if err != nil {
@@ -271,6 +271,7 @@ func (c clusterImpl) stackProvisioner() *cfnstack.Provisioner {
 		c.stackName(),
 		c.tags(),
 		c.opts.S3URI,
+		c.controlPlane.Region,
 		stackPolicyBody,
 		c.session)
 }
