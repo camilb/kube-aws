@@ -96,9 +96,9 @@ coreos:
         After=cfn-etcd-environment.service
         [Service]
         EnvironmentFile=-/etc/etcd-environment
-        Environment=KUBELET_VERSION={{.K8sVer}}
-        Environment=KUBELET_ACI={{ .HyperkubeImage.RktRepoWithoutTag }}
-        Environment="RKT_OPTS=--volume dns,kind=host,source=/etc/resolv.conf {{.HyperkubeImage.Options}}\
+        Environment=KUBELET_IMAGE_TAG={{.K8sVer}}
+        Environment=KUBELET_IMAGE_URL={{ .HyperkubeImage.RktRepoWithoutTag }}
+        Environment="RKT_RUN_ARGS=--volume dns,kind=host,source=/etc/resolv.conf {{.HyperkubeImage.Options}}\
         --set-env=ETCD_CA_CERT_FILE=/etc/kubernetes/ssl/ca.pem \
         --set-env=ETCD_CERT_FILE=/etc/kubernetes/ssl/etcd-client.pem \
         --set-env=ETCD_KEY_FILE=/etc/kubernetes/ssl/etcd-client-key.pem \
@@ -129,7 +129,7 @@ coreos:
 
         ExecStartPre=/bin/sh -ec "find /etc/kubernetes/manifests /srv/kubernetes/manifests  -maxdepth 1 -type f | xargs --no-run-if-empty sed -i 's|#ETCD_ENDPOINTS#|${ETCD_ENDPOINTS}|'"
         ExecStart=/usr/lib/coreos/kubelet-wrapper \
-        --api-servers=http://localhost:8080 \
+        --kubeconfig=http://localhost:8080 \
         --cni-conf-dir=/etc/kubernetes/cni/net.d \
         --network-plugin={{.K8sNetworkPlugin}} \
         --container-runtime={{.ContainerRuntime}} \
@@ -338,14 +338,16 @@ ssh_authorized_keys:
       content: |
         [Unit]
         Description=Pull and tag a mirror image for pause-amd64
-        After=docker.service
         Wants=docker.service
 
         [Service]
-        Restart=on-failure
+        Type=oneshot
         RemainAfterExit=true
         ExecStartPre=/usr/bin/docker pull {{.PauseImage.RepoWithTag}}
-        ExecStart=/usr/bin/docker tag  {{.PauseImage.RepoWithTag}} gcr.io/google_containers/pause-amd64:3.0
+        ExecStart=/usr/bin/docker tag {{.PauseImage.RepoWithTag}} gcr.io/google_containers/pause-amd64:3.0
+        ExecStop=/bin/true
+        [Install]
+        WantedBy=install-kube-system.service
 {{end}}
 write_files:
 {{if .Experimental.AwsEnvironment.Enabled}}
