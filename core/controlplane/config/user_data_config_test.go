@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/service/kms"
 	"github.com/coreos/coreos-cloudinit/config/validate"
+	"github.com/kubernetes-incubator/kube-aws/test/helper"
 )
 
 var numEncryption int
@@ -63,34 +64,62 @@ func TestCloudConfigTemplating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed generating tls ca: %v", err)
 	}
-	assets, err := cluster.NewTLSAssets(caKey, caCert)
-	if err != nil {
-		t.Fatalf("Error generating default assets: %v", err)
+	opts := CredentialsOptions{
+		GenerateCA: true,
 	}
 
-	encryptedAssets, err := assets.Encrypt(cfg.KMSKeyARN, &dummyEncryptService{})
-	if err != nil {
-		t.Fatalf("failed to compress TLS assets: %v", err)
+	var compactAssets *CompactTLSAssets
+
+	cachedEncryptor := CachedEncryptor{
+		bytesEncryptionService: bytesEncryptionService{kmsKeyARN: cfg.KMSKeyARN, kmsSvc: &dummyEncryptService{}},
 	}
 
-	compactAssets, err := encryptedAssets.Compact()
-	if err != nil {
-		t.Fatalf("failed to compress TLS assets: %v", err)
+	helper.WithTempDir(func(dir string) {
+		_, err = cluster.NewTLSAssetsOnDisk(dir, opts, caKey, caCert)
+		if err != nil {
+			t.Fatalf("Error generating default assets: %v", err)
+		}
+
+		encryptedAssets, err := ReadOrEncryptTLSAssets(dir, cachedEncryptor)
+		if err != nil {
+			t.Fatalf("failed to compress TLS assets: %v", err)
+		}
+
+		compactAssets, err = encryptedAssets.Compact()
+		if err != nil {
+			t.Fatalf("failed to compress TLS assets: %v", err)
+		}
+	})
+
+	if compactAssets == nil {
+		t.Fatal("compactAssets is unexpectedly nil")
+		t.FailNow()
 	}
 
 	cfg.TLSConfig = compactAssets
 
+	var compactAuthTokens *CompactAuthTokens
+
 	// Auth tokens
-	authTokens := cluster.NewAuthTokens()
+	helper.WithTempDir(func(dir string) {
+		if err := CreateRawAuthTokens(false, dir); err != nil {
+			t.Fatalf("failed to create auth token file: %v", err)
+		}
 
-	encryptedAuthTokens, err := authTokens.Encrypt(cfg.KMSKeyARN, &dummyEncryptService{})
-	if err != nil {
-		t.Fatalf("failed to compress auth token file: %v", err)
-	}
+		encryptedAuthTokens, err := ReadOrEncryptAuthTokens(dir, cachedEncryptor)
+		if err != nil {
+			t.Fatalf("failed to compress auth token file: %v", err)
+		}
 
-	compactAuthTokens, err := encryptedAuthTokens.Compact()
-	if err != nil {
-		t.Fatalf("failed to compress auth token file: %v", err)
+		compactAuthTokens, err = encryptedAuthTokens.Compact()
+		if err != nil {
+			t.Fatalf("failed to compress auth token file: %v", err)
+		}
+	})
+
+	if compactAuthTokens == nil {
+		t.Fatal("compactAuthTokens is unexpectedly nil")
+		t.FailNow()
 	}
 
 	cfg.AuthTokensConfig = compactAuthTokens
