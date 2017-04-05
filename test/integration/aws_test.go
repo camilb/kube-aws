@@ -2,9 +2,9 @@ package integration
 
 import (
 	"fmt"
-	"github.com/coreos/kube-aws/core/controlplane/config"
-	"github.com/coreos/kube-aws/model"
-	"github.com/coreos/kube-aws/test/helper"
+	"github.com/kubernetes-incubator/kube-aws/core/controlplane/config"
+	"github.com/kubernetes-incubator/kube-aws/model"
+	"github.com/kubernetes-incubator/kube-aws/test/helper"
 	"os"
 	"testing"
 )
@@ -44,7 +44,7 @@ func newKubeAwsSettingsFromEnv(t *testing.T) kubeAwsSettings {
 	clusterName, clusterNameExists := os.LookupEnv("KUBE_AWS_CLUSTER_NAME")
 
 	if !clusterNameExists || clusterName == "" {
-		clusterName = "kubeaws-it"
+		clusterName = "it"
 		t.Logf(`Falling back clusterName to a stub value "%s" for tests of validating stack templates. No assets will actually be uploaded to S3 and no clusters will be created with CloudFormation`, clusterName)
 	}
 
@@ -89,10 +89,27 @@ region: "%s"
 	)
 }
 
+func (s kubeAwsSettings) mainClusterYamlWithoutExternalDNS() string {
+	return fmt.Sprintf(`clusterName: %s
+keyName: "%s"
+kmsKeyArn: "%s"
+region: "%s"
+`,
+		s.clusterName,
+		s.keyName,
+		s.kmsKeyArn,
+		s.region,
+	)
+}
+
 func (s kubeAwsSettings) minimumValidClusterYaml() string {
+	return s.minimumValidClusterYamlWithAZ("a")
+}
+
+func (s kubeAwsSettings) minimumValidClusterYamlWithAZ(suffix string) string {
 	return s.mainClusterYaml() + fmt.Sprintf(`
 availabilityZone: %s
-`, s.region+"a")
+`, s.region+suffix)
 }
 
 func (s kubeAwsSettings) withClusterName(n string) kubeAwsSettings {

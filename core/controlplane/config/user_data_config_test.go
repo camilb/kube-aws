@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/service/kms"
 	"github.com/coreos/coreos-cloudinit/config/validate"
-	"github.com/coreos/kube-aws/test/helper"
+	"github.com/kubernetes-incubator/kube-aws/test/helper"
 )
 
 var numEncryption int
@@ -64,7 +64,9 @@ func TestCloudConfigTemplating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed generating tls ca: %v", err)
 	}
-	opts := CredentialsOptions{}
+	opts := CredentialsOptions{
+		GenerateCA: true,
+	}
 
 	var compactAssets *CompactTLSAssets
 
@@ -100,10 +102,8 @@ func TestCloudConfigTemplating(t *testing.T) {
 
 	// Auth tokens
 	helper.WithTempDir(func(dir string) {
-		_, err := NewAuthTokensOnDisk(dir)
-		if err != nil {
-			t.Fatalf("failed to write auth tokens on disk: %v", err)
-			t.FailNow()
+		if err := CreateRawAuthTokens(false, dir); err != nil {
+			t.Fatalf("failed to create auth token file: %v", err)
 		}
 
 		encryptedAuthTokens, err := ReadOrEncryptAuthTokens(dir, cachedEncryptor)

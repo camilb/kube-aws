@@ -7,8 +7,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"github.com/coreos/kube-aws/model"
-	"github.com/coreos/kube-aws/test/helper"
+	"github.com/kubernetes-incubator/kube-aws/model"
+	"github.com/kubernetes-incubator/kube-aws/test/helper"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -117,7 +117,7 @@ func TestReadOrCreateCompactTLSAssets(t *testing.T) {
 			EncryptService: &dummyEncryptService{},
 		}
 
-		// See https://github.com/coreos/kube-aws/issues/107
+		// See https://github.com/kubernetes-incubator/kube-aws/issues/107
 		t.Run("CachedToPreventUnnecessaryNodeReplacement", func(t *testing.T) {
 			created, err := ReadOrCreateCompactTLSAssets(dir, kmsConfig)
 
@@ -160,11 +160,6 @@ func TestReadOrCreateCompactTLSAssets(t *testing.T) {
 					t.Errorf("failed to remove %s for test setup : %v", filename, err)
 					t.FailNow()
 				}
-			}
-
-			if err := os.Remove(filepath.Join(dir, "ca-key.pem.enc")); err == nil {
-				t.Error("ca-key.pem.enc should not exist")
-				t.FailNow()
 			}
 
 			regenerated, err := ReadOrCreateCompactTLSAssets(dir, kmsConfig)
@@ -231,16 +226,16 @@ func TestReadOrCreateCompactTLSAssets(t *testing.T) {
 	})
 }
 
-func TestReadOrCreateUnEcryptedCompactTLSAssets(t *testing.T) {
+func TestReadOrCreateUnEncryptedCompactTLSAssets(t *testing.T) {
 	helper.WithDummyCredentials(func(dir string) {
 		t.Run("CachedToPreventUnnecessaryNodeReplacementOnUnencrypted", func(t *testing.T) {
-			created, err := ReadOrCreateUnecryptedCompactTLSAssets(dir)
+			created, err := ReadOrCreateUnencryptedCompactTLSAssets(dir)
 
 			if err != nil {
 				t.Errorf("failed to read or update compact tls assets in %s : %v", dir, err)
 			}
 
-			read, err := ReadOrCreateUnecryptedCompactTLSAssets(dir)
+			read, err := ReadOrCreateUnencryptedCompactTLSAssets(dir)
 
 			if err != nil {
 				t.Errorf("failed to read or update compact tls assets in %s : %v", dir, err)
