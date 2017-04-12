@@ -2,7 +2,6 @@ package integration
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"reflect"
 	"strings"
@@ -1401,6 +1400,8 @@ worker:
   apiEndpointName: versionedPrivate
   # btw apiEndpointName can be defaulted to a private/public managed(hence unstable/possibly versioned but not stable/unversioned)
   # elb/round-robin if and only if there is only one. However we dont do the complex defaulting like that for now.
+
+adminAPIEndpointName: versionedPublic
 
 apiEndpoints:
 - name: unversionedPublic
@@ -2937,14 +2938,6 @@ etcdDataVolumeEncrypted: true
 				stackTemplateOptions.NodePoolStackTemplateTmplFile = "../../core/nodepool/config/templates/stack-template.json"
 				stackTemplateOptions.ControlPlaneStackTemplateTmplFile = "../../core/controlplane/config/templates/stack-template.json"
 
-				// Creates auth token file with bootstrap token if this setting is enabled
-				if providedConfig.Experimental.TLSBootstrap.Enabled {
-					tokensFile := fmt.Sprintf("%s/tokens.csv", dummyAssetsDir)
-					if err := ioutil.WriteFile(tokensFile, []byte("dummytoken,kubelet-bootstrap,10001,system:kubelet-bootstrap"), 0664); err != nil {
-						panic(err)
-					}
-				}
-
 				cluster, err := root.ClusterFromConfig(providedConfig, stackTemplateOptions, false)
 				if err != nil {
 					t.Errorf("failed to create cluster driver : %v", err)
@@ -3130,6 +3123,8 @@ worker:
   # no api endpoint named like that exists!
   apiEndpointName: unknownEndpoint
 
+adminAPIEndpointName: versionedPublic
+
 apiEndpoints:
 - name: unversionedPublic
   dnsName: api.example.com
@@ -3165,6 +3160,8 @@ worker:
   - name: pool1
     # this one is ng; no api endpoint named this exists!
     apiEndpointName: unknownEndpoint
+
+adminAPIEndpointName: versionedPublic
 
 apiEndpoints:
 - name: unversionedPublic
@@ -3217,6 +3214,8 @@ worker:
     apiEndpointName: unknownEndpoint
   - name: pool1
     # this one is ng; missing apiEndpointName
+
+adminAPIEndpointName: versionedPublic
 
 apiEndpoints:
 - name: unversionedPublic

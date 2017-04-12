@@ -57,6 +57,12 @@ coreos:
             After=var-lib-docker.mount
             Wants=var-lib-docker.mount
 {{end}}
+        - name: 10-post-start-check.conf
+          content: |
+            [Service]
+            RestartSec=10
+            ExecStartPost=/usr/bin/docker pull {{.PauseImage.RepoWithTag}}
+
         - name: 40-flannel.conf
           content: |
             [Unit]
@@ -159,9 +165,14 @@ coreos:
                        cluster-health
 
         ExecStartPre=/bin/sh -ec "find /etc/kubernetes/manifests /srv/kubernetes/manifests  -maxdepth 1 -type f | xargs --no-run-if-empty sed -i 's|#ETCD_ENDPOINTS#|${ETCD_ENDPOINTS}|'"
+        {{if .UseCalico -}}
+        ExecStartPre=/usr/bin/docker run --rm -e SLEEP=false -v /opt/cni/bin:/host/opt/cni/bin {{ .CalicoCniImage.RepoWithTag }} /install-cni.sh
+        {{end -}}
         ExecStart=/usr/lib/coreos/kubelet-wrapper \
         --api-servers=http://localhost:8080 \
         --cni-conf-dir=/etc/kubernetes/cni/net.d \
+        {{/* Work-around until https://github.com/kubernetes/kubernetes/issues/43967 is fixed via https://github.com/kubernetes/kubernetes/pull/43995 */ -}}
+        --cni-bin-dir=/opt/cni/bin \
         --network-plugin={{.K8sNetworkPlugin}} \
         --container-runtime={{.ContainerRuntime}} \
         --rkt-path=/usr/bin/rkt \
@@ -486,8 +497,13 @@ write_files:
       #!/bin/bash -e
 
       kubectl() {
-          /usr/bin/docker run --rm --net=host -v /srv/kubernetes/manifests:/srv/kubernetes/manifests {{.HyperkubeImage.RepoWithTag}} /hyperkube kubectl "$@"
+          /usr/bin/docker run --rm --net=host -v /srv/kubernetes:/srv/kubernetes {{.HyperkubeImage.RepoWithTag}} /hyperkube kubectl "$@"
       }
+
+      while ! kubectl get ns kube-system; do
+        echo Waiting until kube-system created.
+        sleep 3
+      done
 
       mfdir=/srv/kubernetes/manifests
 
@@ -497,7 +513,7 @@ write_files:
       {{ end }}
 
       # Deployments
-      for manifest in {kube-dns-de,kube-dns-autoscaler-de,heapster-de}.yaml; do
+      for manifest in {kube-dns-de,kube-dns-autoscaler-de,heapster-de{{ if .KubeResourcesAutosave.Enabled }},kube-resources-autosave{{ end }}}.yaml; do
           kubectl apply -f "${mfdir}/$manifest"
       done
 
@@ -622,10 +638,14 @@ write_files:
               k8s-app: calico-node
             annotations:
               scheduler.alpha.kubernetes.io/critical-pod: ''
-              scheduler.alpha.kubernetes.io/tolerations: |
-                [{"key": "node.alpha.kubernetes.io/role", "value": "master", "effect": "NoSchedule" },
-                {"key":"CriticalAddonsOnly", "operator":"Exists"}]
           spec:
+            tolerations:
+            - key: "node.alpha.kubernetes.io/role"
+              operator: "Equal"
+              value: "master"
+              effect: "NoSchedule"
+            - key: "CriticalAddonsOnly"
+              operator: "Exists"
             hostNetwork: true
             containers:
               - name: calico-node
@@ -671,30 +691,6 @@ write_files:
                   - mountPath: /etc/resolv.conf
                     name: dns
                     readOnly: true
-              - name: install-cni
-                image: {{ .CalicoCniImage.RepoWithTag }}
-                imagePullPolicy: Always
-                command: ["/install-cni.sh"]
-                env:
-                  - name: ETCD_ENDPOINTS
-                    valueFrom:
-                      configMapKeyRef:
-                        name: calico-config
-                        key: etcd_endpoints
-                  - name: CNI_NETWORK_CONFIG
-                    valueFrom:
-                      configMapKeyRef:
-                        name: calico-config
-                        key: cni_network_config
-                  - name: CNI_NET_DIR
-                    value: "/etc/kubernetes/cni/net.d"
-                volumeMounts:
-                  - mountPath: /host/opt/cni/bin
-                    name: cni-bin-dir
-                  - mountPath: /host/etc/cni/net.d
-                    name: cni-net-dir
-                  - mountPath: /calico-secrets
-                    name: etcd-certs
             volumes:
               - name: lib-modules
                 hostPath:
@@ -726,9 +722,6 @@ write_files:
           k8s-app: calico-policy
         annotations:
           scheduler.alpha.kubernetes.io/critical-pod: ''
-          scheduler.alpha.kubernetes.io/tolerations: |
-            [{"key": "node.alpha.kubernetes.io/role", "value": "master", "effect": "NoSchedule" },
-            {"key":"CriticalAddonsOnly", "operator":"Exists"}]
 
       spec:
         replicas: 1
@@ -739,6 +732,13 @@ write_files:
             labels:
               k8s-app: calico-policy
           spec:
+            tolerations:
+            - key: "node.alpha.kubernetes.io/role"
+              operator: "Equal"
+              value: "master"
+              effect: "NoSchedule"
+            - key: "CriticalAddonsOnly"
+              operator: "Exists"
             hostNetwork: true
             containers:
               - name: calico-policy-controller
@@ -790,6 +790,116 @@ write_files:
       sed -i -e "s#\$ETCDCERT#$etcd_cert#g" /srv/kubernetes/manifests/calico.yaml
       sed -i -e "s#\$ETCDKEY#$etcd_key#g" /srv/kubernetes/manifests/calico.yaml
 
+{{ end }}
+{{ if .KubeResourcesAutosave.Enabled }}
+  - path: /srv/kubernetes/manifests/kube-resources-autosave.yaml
+    content: |
+      ---
+      apiVersion: extensions/v1beta1
+      kind: Deployment
+      metadata:
+        name: kube-resources-autosave
+        namespace: kube-system
+        labels:
+          k8s-app: kube-resources-autosave-policy
+      spec:
+        replicas: 1
+        template:
+          metadata:
+            name: kube-resources-autosave
+            namespace: kube-system
+            labels:
+              k8s-app: kube-resources-autosave-policy
+          spec:
+            containers:
+            - name: kube-resources-autosave-dumper
+              image: {{.HyperkubeImage.RepoWithTag}}
+              command: ["/bin/bash", "-c" ]
+              args:
+                - |
+                    set -x ;
+                    DUMP_DIR_COMPLETE=/kube-resources-autosave/complete ;
+                    mkdir -p ${DUMP_DIR_COMPLETE} ;
+                    while true; do
+                      TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+                      DUMP_DIR=/kube-resources-autosave/tmp/${TIMESTAMP} ;
+                      mkdir -p ${DUMP_DIR} ;
+                      RESOURCES_OUT_NAMESPACE=( namespaces persistentvolumes nodes storageclasses clusterrolebindings clusterroles ) ;
+                      for r in ${RESOURCES_OUT_NAMESPACE[@]};do
+                        echo " Searching for resources: ${r}" ;
+                        /kubectl get --export -o=json ${r} | \
+                        jq '.items[] |
+                            del(.status,
+                            .metadata.uid,
+                            .metadata.selfLink,
+                            .metadata.resourceVersion,
+                            .metadata.creationTimestamp,
+                            .metadata.generation,
+                            .spec.claimRef
+                          )' > ${DUMP_DIR}/${r}.json ;
+                      done ;
+                      RESOURCES_IN_NAMESPACE=( componentstatuses configmaps daemonsets deployments endpoints events horizontalpodautoscalers
+                      ingresses jobs limitranges networkpolicies  persistentvolumeclaims pods podsecuritypolicies podtemplates replicasets
+                      replicationcontrollers resourcequotas secrets serviceaccounts services statefulsets thirdpartyresources
+                      poddisruptionbudgets roles rolebindings) ;
+                      for ns in $(jq -r '.metadata.name' < ${DUMP_DIR}/namespaces.json);do
+                        echo "Searching in namespace: ${ns}" ;
+                        mkdir -p ${DUMP_DIR}/${ns} ;
+                        for r in ${RESOURCES_IN_NAMESPACE[@]};do
+                          echo " Searching for resources: ${r}" ;
+                          /kubectl --namespace=${ns} get --export -o=json ${r} | \
+                          jq '.items[] |
+                            select(.type!="kubernetes.io/service-account-token") |
+                            del(
+                              .spec.clusterIP,
+                              .metadata.uid,
+                              .metadata.selfLink,
+                              .metadata.resourceVersion,
+                              .metadata.creationTimestamp,
+                              .metadata.generation,
+                              .metadata.annotations."pv.kubernetes.io/bind-completed",
+                              .status
+                            )' > ${DUMP_DIR}/${ns}/${r}.json && touch /probe-token ;
+                        done ;
+                      done ;
+                    mv ${DUMP_DIR} ${DUMP_DIR_COMPLETE}/${TIMESTAMP} ;
+                    rm -r -f ${DUMP_DIR} ;
+                    sleep 24h ;
+                    done
+              livenessProbe:
+                exec:
+                  command: ["/bin/bash", "-c", "(( $(date +%s) - $(stat -c%Y /probe-token) < 25*60*60 ))" ]
+                initialDelaySeconds: 240
+                periodSeconds: 10
+              volumeMounts:
+              - name: dump-dir
+                mountPath: /kube-resources-autosave
+                readOnly: false
+            - name: kube-resources-autosave-pusher
+              image: {{.AWSCliImage.RepoWithTag}}
+              command: ["/bin/bash", "-c" ]
+              args:
+                - |
+                    set -x ;
+                    DUMP_DIR_COMPLETE=/kube-resources-autosave/complete ;
+                    while true; do
+                      for FILE in ${DUMP_DIR_COMPLETE}/* ; do
+                        aws s3 mv ${FILE} s3://{{ .KubeResourcesAutosave.S3Path }}/$(basename ${FILE}) --recursive && rm -r -f ${FILE} && touch /probe-token ;
+                      done ;
+                      sleep 1m ;
+                    done
+              livenessProbe:
+                exec:
+                  command: ["/bin/bash", "-c", "(( $(date +%s) - $(stat -c%Y /probe-token) < 25*60*60 ))" ]
+                initialDelaySeconds: 240
+                periodSeconds: 10
+              volumeMounts:
+              - name: dump-dir
+                mountPath: /kube-resources-autosave
+                readOnly: false
+            volumes:
+            - name: dump-dir
+              emptyDir: {}
 {{ end }}
 
 {{if .AssetsEncryptionEnabled }}
@@ -856,7 +966,7 @@ write_files:
   - path: /srv/kubernetes/rbac/cluster-roles/cluster-admin.yaml
     content: |
         kind: ClusterRole
-        apiVersion: rbac.authorization.k8s.io/v1alpha1
+        apiVersion: rbac.authorization.k8s.io/v1beta1
         metadata:
             name: cluster-admin
         rules:
@@ -871,7 +981,7 @@ write_files:
   - path: /srv/kubernetes/rbac/cluster-roles/bootstrapped-node.yaml
     content: |
         kind: ClusterRole
-        apiVersion: rbac.authorization.k8s.io/v1alpha1
+        apiVersion: rbac.authorization.k8s.io/v1beta1
         metadata:
             name: bootstrapped-node
         rules:
@@ -903,7 +1013,7 @@ write_files:
   - path: /srv/kubernetes/rbac/cluster-role-bindings/kube-admin.yaml
     content: |
         kind: ClusterRoleBinding
-        apiVersion: rbac.authorization.k8s.io/v1alpha1
+        apiVersion: rbac.authorization.k8s.io/v1beta1
         metadata:
           name: kube-admin
         subjects:
@@ -917,7 +1027,7 @@ write_files:
   - path: /srv/kubernetes/rbac/cluster-role-bindings/kube-worker.yaml
     content: |
         kind: ClusterRoleBinding
-        apiVersion: rbac.authorization.k8s.io/v1alpha1
+        apiVersion: rbac.authorization.k8s.io/v1beta1
         metadata:
           name: kube-worker
         subjects:
@@ -932,7 +1042,7 @@ write_files:
   - path: /srv/kubernetes/rbac/cluster-role-bindings/system-worker.yaml
     content: |
         kind: ClusterRoleBinding
-        apiVersion: rbac.authorization.k8s.io/v1alpha1
+        apiVersion: rbac.authorization.k8s.io/v1beta1
         metadata:
           name: system-worker
         subjects:
@@ -949,7 +1059,7 @@ write_files:
   - path: /srv/kubernetes/rbac/cluster-role-bindings/bootstrapped-node.yaml
     content: |
         kind: ClusterRoleBinding
-        apiVersion: rbac.authorization.k8s.io/v1alpha1
+        apiVersion: rbac.authorization.k8s.io/v1beta1
         metadata:
           name: bootstrapped-node
         subjects:
@@ -965,7 +1075,7 @@ write_files:
   - path: /srv/kubernetes/rbac/cluster-roles/kubelet-bootstrap.yaml
     content: |
         kind: ClusterRole
-        apiVersion: rbac.authorization.k8s.io/v1alpha1
+        apiVersion: rbac.authorization.k8s.io/v1beta1
         metadata:
           name: kubelet-bootstrap
         rules:
@@ -982,7 +1092,7 @@ write_files:
   - path: /srv/kubernetes/rbac/cluster-role-bindings/kubelet-bootstrap.yaml
     content: |
         kind: ClusterRoleBinding
-        apiVersion: rbac.authorization.k8s.io/v1alpha1
+        apiVersion: rbac.authorization.k8s.io/v1beta1
         metadata:
           name: kubelet-bootstrap
         subjects:
@@ -1087,7 +1197,7 @@ write_files:
           - --tls-private-key-file=/etc/kubernetes/ssl/apiserver-key.pem
           - --client-ca-file=/etc/kubernetes/ssl/ca.pem
           - --service-account-key-file=/etc/kubernetes/ssl/apiserver-key.pem
-          - --runtime-config=extensions/v1beta1/networkpolicies=true,batch/v2alpha1{{if .Experimental.Plugins.Rbac.Enabled}},rbac.authorization.k8s.io/v1alpha1=true{{ end }}{{if .Experimental.Admission.PodSecurityPolicy.Enabled}},extensions/v1beta1/podsecuritypolicy=true{{ end }}
+          - --runtime-config=extensions/v1beta1/networkpolicies=true,batch/v2alpha1{{if .Experimental.Plugins.Rbac.Enabled}},rbac.authorization.k8s.io/v1beta1=true{{ end }}{{if .Experimental.Admission.PodSecurityPolicy.Enabled}},extensions/v1beta1/podsecuritypolicy=true{{ end }}
           - --cloud-provider=aws
           livenessProbe:
             httpGet:
@@ -1195,7 +1305,7 @@ write_files:
         hostNetwork: true
         volumes:
         {{if .Experimental.DisableSecurityGroupIngress}}
-        - hostPath: 
+        - hostPath:
             path: /etc/kubernetes/additional-configs
           name: additional-configs
         {{end}}
@@ -1256,8 +1366,10 @@ write_files:
               k8s-app: kube-rescheduler
             annotations:
               scheduler.alpha.kubernetes.io/critical-pod: ''
-              scheduler.alpha.kubernetes.io/tolerations: '[{"key":"CriticalAddonsOnly", "operator":"Exists"}]'
           spec:
+            tolerations:
+            - key: "CriticalAddonsOnly"
+              operator: "Exists"
             hostNetwork: true
             containers:
             - name: kube-rescheduler
@@ -1285,8 +1397,10 @@ write_files:
                 k8s-app: kube-dns-autoscaler
               annotations:
                 scheduler.alpha.kubernetes.io/critical-pod: ''
-                scheduler.alpha.kubernetes.io/tolerations: '[{"key":"CriticalAddonsOnly", "operator":"Exists"}]'
             spec:
+              tolerations:
+              - key: "CriticalAddonsOnly"
+                operator: "Exists"
               containers:
               - name: autoscaler
                 image: {{ .ClusterAutoscalerImage.RepoWithTag }}
@@ -1332,8 +1446,10 @@ write_files:
                 k8s-app: kube-dns
               annotations:
                 scheduler.alpha.kubernetes.io/critical-pod: ''
-                scheduler.alpha.kubernetes.io/tolerations: '[{"key":"CriticalAddonsOnly", "operator":"Exists"}]'
             spec:
+              tolerations:
+              - key: "CriticalAddonsOnly"
+                operator: "Exists"
               containers:
               - name: kubedns
                 image: {{ .KubeDnsImage.RepoWithTag }}
@@ -1495,8 +1611,10 @@ write_files:
                 version: v1.3.0
               annotations:
                 scheduler.alpha.kubernetes.io/critical-pod: ''
-                scheduler.alpha.kubernetes.io/tolerations: '[{"key":"CriticalAddonsOnly", "operator":"Exists"}]'
             spec:
+              tolerations:
+              - key: "CriticalAddonsOnly"
+                operator: "Exists"
               containers:
                 - image: {{ .HeapsterImage.RepoWithTag }}
                   name: heapster
@@ -1588,8 +1706,10 @@ write_files:
                 kubernetes.io/cluster-service: "true"
               annotations:
                 scheduler.alpha.kubernetes.io/critical-pod: ''
-                scheduler.alpha.kubernetes.io/tolerations: '[{"key":"CriticalAddonsOnly", "operator":"Exists"}]'
             spec:
+              tolerations:
+              - key: "CriticalAddonsOnly"
+                operator: "Exists"
               containers:
               - name: kubernetes-dashboard
                 image: {{ .KubeDashboardImage.RepoWithTag }}
@@ -1673,6 +1793,25 @@ write_files:
         }
 
 {{ else }}
+
+  - path: /etc/kubernetes/cni/net.d/10-calico.conf
+    content: |
+      {
+        "name": "calico",
+        "type": "flannel",
+        "delegate": {
+          "type": "calico",
+          "etcd_endpoints": "#ETCD_ENDPOINTS#",
+          "etcd_key_file": "/etc/kubernetes/ssl/etcd-client-key.pem",
+          "etcd_cert_file": "/etc/kubernetes/ssl/etcd-client.pem",
+          "etcd_ca_cert_file": "/etc/kubernetes/ssl/ca.pem",
+          "log_level": "info",
+          "policy": {
+            "type": "k8s",
+            "k8s_api_root": "http://127.0.0.1:8080/api/v1/"
+          }
+        }
+      }
 
   # http://docs.projectcalico.org/v2.0/usage/configuration/
   - path: /etc/modules-load.d/nf.conf

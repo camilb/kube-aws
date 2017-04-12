@@ -50,7 +50,8 @@ type DeploymentSettings struct {
 }
 
 type MainClusterSettings struct {
-	EtcdNodes []derived.EtcdNode
+	EtcdNodes             []derived.EtcdNode
+	KubeResourcesAutosave cfg.KubeResourcesAutosave
 }
 
 type StackTemplateOptions struct {
@@ -79,11 +80,14 @@ func (c ProvidedConfig) StackConfig(opts StackTemplateOptions) (*StackConfig, er
 
 	if stackConfig.ManageCertificates {
 		if stackConfig.ComputedConfig.AssetsEncryptionEnabled() {
-			compactAssets, _ := cfg.ReadOrCreateCompactTLSAssets(opts.AssetsDir, cfg.KMSConfig{
+			compactAssets, err := cfg.ReadOrCreateCompactTLSAssets(opts.AssetsDir, cfg.KMSConfig{
 				Region:         stackConfig.ComputedConfig.Region,
 				KMSKeyARN:      c.KMSKeyARN,
 				EncryptService: c.ProvidedEncryptService,
 			})
+			if err != nil {
+				return nil, err
+			}
 			stackConfig.ComputedConfig.TLSConfig = compactAssets
 		} else {
 			rawAssets, _ := cfg.ReadOrCreateUnencryptedCompactTLSAssets(opts.AssetsDir)
@@ -115,6 +119,7 @@ func (c ProvidedConfig) StackConfig(opts StackTemplateOptions) (*StackConfig, er
 
 	baseS3URI := strings.TrimSuffix(opts.S3URI, "/")
 	stackConfig.S3URI = fmt.Sprintf("%s/kube-aws/clusters/%s/exported/stacks", baseS3URI, c.ClusterName)
+	stackConfig.KubeResourcesAutosave.S3Path = fmt.Sprintf("%s/kube-aws/clusters/%s/backup", strings.TrimPrefix(baseS3URI, "s3://"), c.ClusterName)
 
 	if opts.SkipWait {
 		enabled := false
@@ -234,6 +239,7 @@ define one or more public subnets in cluster.yaml or explicitly reference privat
 	}
 
 	c.EtcdNodes = main.EtcdNodes
+	c.KubeResourcesAutosave = main.KubeResourcesAutosave
 
 	var apiEndpoint derived.APIEndpoint
 	if c.APIEndpointName != "" {
@@ -267,6 +273,12 @@ func ClusterFromBytesWithEncryptService(data []byte, main *cfg.Config, encryptSe
 	}
 	cluster.ProvidedEncryptService = encryptService
 	return cluster, nil
+}
+
+// APIEndpointURL is the url of the API endpoint which is written in cloud-config-worker and used by kubelets in worker nodes
+// to access the apiserver
+func (c ProvidedConfig) APIEndpointURL() string {
+	return fmt.Sprintf("https://%s", c.APIEndpoint.DNSName)
 }
 
 func (c ProvidedConfig) Config() (*ComputedConfig, error) {

@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	k8sVer = "v1.5.5_coreos.0"
+	k8sVer = "v1.6.1_coreos.0"
 
 	credentialsDir = "credentials"
 	userDataDir    = "userdata"
@@ -104,19 +104,19 @@ func NewDefaultCluster() *Cluster {
 			ManageCertificates:          true,
 			HyperkubeImage:              model.Image{Repo: "quay.io/coreos/hyperkube", Tag: k8sVer, RktPullDocker: false},
 			AWSCliImage:                 model.Image{Repo: "quay.io/coreos/awscli", Tag: "master", RktPullDocker: false},
-			CalicoNodeImage:             model.Image{Repo: "quay.io/calico/node", Tag: "v1.0.2", RktPullDocker: false},
-			CalicoCniImage:              model.Image{Repo: "quay.io/calico/cni", Tag: "v1.5.6", RktPullDocker: false},
+			CalicoNodeImage:             model.Image{Repo: "quay.io/calico/node", Tag: "v1.1.0", RktPullDocker: false},
+			CalicoCniImage:              model.Image{Repo: "quay.io/calico/cni", Tag: "v1.6.2", RktPullDocker: false},
 			CalicoPolicyControllerImage: model.Image{Repo: "quay.io/calico/kube-policy-controller", Tag: "v0.5.4", RktPullDocker: false},
 			ClusterAutoscalerImage:      model.Image{Repo: "gcr.io/google_containers/cluster-proportional-autoscaler-amd64", Tag: "1.0.0", RktPullDocker: false},
 			KubeDnsImage:                model.Image{Repo: "gcr.io/google_containers/kubedns-amd64", Tag: "1.9", RktPullDocker: false},
 			KubeDnsMasqImage:            model.Image{Repo: "gcr.io/google_containers/kube-dnsmasq-amd64", Tag: "1.4", RktPullDocker: false},
-			KubeReschedulerImage:        model.Image{Repo: "gcr.io/google-containers/rescheduler", Tag: "v0.2.2", RktPullDocker: false},
+			KubeReschedulerImage:        model.Image{Repo: "gcr.io/google-containers/rescheduler", Tag: "v0.3.0", RktPullDocker: false},
 			DnsMasqMetricsImage:         model.Image{Repo: "gcr.io/google_containers/dnsmasq-metrics-amd64", Tag: "1.0", RktPullDocker: false},
 			ExecHealthzImage:            model.Image{Repo: "gcr.io/google_containers/exechealthz-amd64", Tag: "1.2", RktPullDocker: false},
 			HeapsterImage:               model.Image{Repo: "gcr.io/google_containers/heapster", Tag: "v1.3.0", RktPullDocker: false},
 			AddonResizerImage:           model.Image{Repo: "gcr.io/google_containers/addon-resizer", Tag: "1.6", RktPullDocker: false},
 			KubeDashboardImage:          model.Image{Repo: "gcr.io/google_containers/kubernetes-dashboard-amd64", Tag: "v1.5.1", RktPullDocker: false},
-			CalicoCtlImage:              model.Image{Repo: "calico/ctl", Tag: "v1.0.0", RktPullDocker: false},
+			CalicoCtlImage:              model.Image{Repo: "calico/ctl", Tag: "v1.1.0", RktPullDocker: false},
 			PauseImage:                  model.Image{Repo: "gcr.io/google_containers/pause-amd64", Tag: "3.0", RktPullDocker: false},
 			FlannelImage:                model.Image{Repo: "quay.io/coreos/flannel", Tag: "v0.6.2", RktPullDocker: false},
 		},
@@ -150,6 +150,9 @@ func NewDefaultCluster() *Cluster {
 		CreateRecordSet:     false,
 		RecordSetTTL:        300,
 		CustomSettings:      make(map[string]interface{}),
+		KubeResourcesAutosave: KubeResourcesAutosave{
+			Enabled: false,
+		},
 	}
 }
 
@@ -635,6 +638,7 @@ type Cluster struct {
 	ControllerSettings     `yaml:",inline"`
 	EtcdSettings           `yaml:",inline"`
 	FlannelSettings        `yaml:",inline"`
+	AdminAPIEndpointName   string `yaml:"adminAPIEndpointName,omitempty"`
 	ServiceCIDR            string `yaml:"serviceCIDR,omitempty"`
 	CreateRecordSet        bool   `yaml:"createRecordSet,omitempty"`
 	RecordSetTTL           int    `yaml:"recordSetTTL,omitempty"`
@@ -643,6 +647,7 @@ type Cluster struct {
 	HostedZoneID           string `yaml:"hostedZoneId,omitempty"`
 	ProvidedEncryptService EncryptService
 	CustomSettings         map[string]interface{} `yaml:"customSettings,omitempty"`
+	KubeResourcesAutosave  `yaml:"kubeResourcesAutosave,omitempty"`
 }
 
 type Experimental struct {
@@ -715,6 +720,11 @@ type EphemeralImageStorage struct {
 
 type Kube2IamSupport struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+type KubeResourcesAutosave struct {
+	Enabled bool `yaml:"enabled"`
+	S3Path  string
 }
 
 type NodeDrainer struct {
@@ -825,9 +835,9 @@ func (c ControllerSettings) ControllerRollingUpdateMinInstancesInService() int {
 	return *c.AutoScalingGroup.RollingUpdateMinInstancesInService
 }
 
-// Required by kubelet to locate the apiserver
-func (c KubeClusterSettings) APIServerEndpoint() string {
-	return fmt.Sprintf("https://%s", c.ExternalDNSName)
+// AdminAPIEndpointURL is the url of the API endpoint which is written in kubeconfig and used to by admins
+func (c *Config) AdminAPIEndpointURL() string {
+	return fmt.Sprintf("https://%s", c.AdminAPIEndpoint.DNSName)
 }
 
 // Required by kubelet to use the consistent network plugin with the base cluster
@@ -882,6 +892,29 @@ func (c Cluster) Config() (*Config, error) {
 	}
 
 	config.APIEndpoints = apiEndpoints
+
+	apiEndpointNames := []string{}
+	for _, e := range apiEndpoints {
+		apiEndpointNames = append(apiEndpointNames, e.Name)
+	}
+
+	var adminAPIEndpoint derived.APIEndpoint
+	if c.AdminAPIEndpointName != "" {
+		found, err := apiEndpoints.FindByName(c.AdminAPIEndpointName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find an API endpoint named \"%s\": %v", c.AdminAPIEndpointName, err)
+		}
+		adminAPIEndpoint = *found
+	} else {
+		if len(apiEndpoints) > 1 {
+			return nil, fmt.Errorf(
+				"adminAPIEndpointName must not be empty when there's 2 or more api endpoints under the key `apiEndpoints`. Specify one of: %s",
+				strings.Join(apiEndpointNames, ", "),
+			)
+		}
+		adminAPIEndpoint = apiEndpoints.GetDefault()
+	}
+	config.AdminAPIEndpoint = adminAPIEndpoint
 
 	return &config, nil
 }
@@ -938,6 +971,18 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 	var compactAssets *CompactTLSAssets
 	var compactAuthTokens *CompactAuthTokens
 
+	// Automatically generates the auth token file if it doesn't exist
+	if !AuthTokensFileExists(opts.AssetsDir) {
+		createBootstrapToken := c.DeploymentSettings.Experimental.TLSBootstrap.Enabled
+		created, err := CreateRawAuthTokens(createBootstrapToken, opts.AssetsDir)
+		if err != nil {
+			return nil, err
+		}
+		if created {
+			fmt.Println("INFO: Created initial auth token file in ./credentials/tokens.csv")
+		}
+	}
+
 	if c.AssetsEncryptionEnabled() {
 		compactAuthTokens, err = ReadOrCreateCompactAuthTokens(opts.AssetsDir, KMSConfig{
 			Region:         stackConfig.Config.Region,
@@ -962,6 +1007,9 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 				KMSKeyARN:      c.KMSKeyARN,
 				EncryptService: c.ProvidedEncryptService,
 			})
+			if err != nil {
+				return nil, err
+			}
 
 			stackConfig.Config.TLSConfig = compactAssets
 		} else {
@@ -974,18 +1022,22 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 		}
 	}
 
+	if c.Experimental.TLSBootstrap.Enabled && !c.Experimental.Plugins.Rbac.Enabled {
+		fmt.Println(`WARNING: enabling cluster-level TLS bootstrapping without RBAC is not recommended. See https://kubernetes.io/docs/admin/kubelet-tls-bootstrapping/ for more information`)
+	}
 	if stackConfig.UserDataController, err = userdatatemplate.GetString(opts.ControllerTmplFile, stackConfig.Config); err != nil {
 		return nil, fmt.Errorf("failed to render controller cloud config: %v", err)
 	}
 	if stackConfig.UserDataEtcd, err = userdatatemplate.GetString(opts.EtcdTmplFile, stackConfig.Config); err != nil {
 		return nil, fmt.Errorf("failed to render etcd cloud config: %v", err)
 	}
+
 	if len(stackConfig.Config.AuthTokensConfig.KubeletBootstrapToken) == 0 && c.DeploymentSettings.Experimental.TLSBootstrap.Enabled {
 		bootstrapRecord, err := RandomBootstrapTokenRecord()
 		if err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("kubelet bootstrap token not found in ./credentials/tokens.csv\n\nTo fix this, append the following line to ./credentials.tokens.csv:\n%s", bootstrapRecord)
+		return nil, fmt.Errorf("kubelet bootstrap token not found in ./credentials/tokens.csv.\n\nTo fix this, please append the following line to ./credentials/tokens.csv:\n%s", bootstrapRecord)
 	}
 
 	stackConfig.StackTemplateOptions = opts
@@ -1004,7 +1056,8 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 type Config struct {
 	Cluster
 
-	APIEndpoints derived.APIEndpoints
+	AdminAPIEndpoint derived.APIEndpoint
+	APIEndpoints     derived.APIEndpoints
 
 	EtcdNodes []derived.EtcdNode
 
@@ -1188,10 +1241,6 @@ func (c Cluster) valid() error {
 
 	if c.Controller.InstanceType == "t2.micro" || c.Etcd.InstanceType == "t2.micro" || c.Controller.InstanceType == "t2.nano" || c.Etcd.InstanceType == "t2.nano" {
 		fmt.Println(`WARNING: instance types "t2.nano" and "t2.micro" are not recommended. See https://github.com/kubernetes-incubator/kube-aws/issues/258 for more information`)
-	}
-
-	if c.Experimental.TLSBootstrap.Enabled && !c.Experimental.Plugins.Rbac.Enabled {
-		fmt.Println(`WARNING: enabling cluster-level TLS bootstrapping without RBAC is not recommended. See https://kubernetes.io/docs/admin/kubelet-tls-bootstrapping/ for more information`)
 	}
 
 	if e := cfnresource.ValidateRoleNameLength(c.ClusterName, c.NestedStackName(), c.Controller.ManagedIamRoleName, c.Region.String()); e != nil {
