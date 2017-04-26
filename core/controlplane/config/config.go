@@ -87,7 +87,19 @@ func NewDefaultCluster() *Cluster {
 				Enabled: false,
 			},
 		},
+
 		Taints: model.Taints{},
+		Dex: model.Dex{
+			Enabled:         false,
+			Url:             "https://dex.example.com",
+			ClientId:        "example-app",
+			Username:        "email",
+			Groups:          "groups",
+			SelfSignedCa:    true,
+			Connectors:      []model.Connector{},
+			StaticClients:   []model.StaticClient{},
+			StaticPasswords: []model.StaticPassword{},
+		},
 	}
 
 	return &Cluster{
@@ -104,8 +116,8 @@ func NewDefaultCluster() *Cluster {
 			ManageCertificates:          true,
 			HyperkubeImage:              model.Image{Repo: "quay.io/coreos/hyperkube", Tag: k8sVer, RktPullDocker: false},
 			AWSCliImage:                 model.Image{Repo: "quay.io/coreos/awscli", Tag: "master", RktPullDocker: false},
-			CalicoNodeImage:             model.Image{Repo: "quay.io/calico/node", Tag: "v1.1.0", RktPullDocker: false},
-			CalicoCniImage:              model.Image{Repo: "quay.io/calico/cni", Tag: "v1.6.2", RktPullDocker: false},
+			CalicoNodeImage:             model.Image{Repo: "quay.io/calico/node", Tag: "v1.1.3", RktPullDocker: false},
+			CalicoCniImage:              model.Image{Repo: "quay.io/calico/cni", Tag: "v1.7.0", RktPullDocker: false},
 			CalicoPolicyControllerImage: model.Image{Repo: "quay.io/calico/kube-policy-controller", Tag: "v0.5.4", RktPullDocker: false},
 			ClusterAutoscalerImage:      model.Image{Repo: "gcr.io/google_containers/cluster-proportional-autoscaler-amd64", Tag: "1.0.0", RktPullDocker: false},
 			KubeDnsImage:                model.Image{Repo: "gcr.io/google_containers/k8s-dns-kube-dns-amd64", Tag: "1.14.1", RktPullDocker: false},
@@ -119,6 +131,7 @@ func NewDefaultCluster() *Cluster {
 			CalicoCtlImage:              model.Image{Repo: "calico/ctl", Tag: "v1.1.0", RktPullDocker: false},
 			PauseImage:                  model.Image{Repo: "gcr.io/google_containers/pause-amd64", Tag: "3.0", RktPullDocker: false},
 			FlannelImage:                model.Image{Repo: "quay.io/coreos/flannel", Tag: "v0.6.2", RktPullDocker: false},
+			DexImage:                    model.Image{Repo: "quay.io/coreos/dex", Tag: "v2.4.0", RktPullDocker: false},
 		},
 		KubeClusterSettings: KubeClusterSettings{
 			DNSServiceIP: "10.3.0.10",
@@ -494,6 +507,7 @@ type DeploymentSettings struct {
 	KubeDashboardImage          model.Image `yaml:"kubeDashboardImage,omitempty"`
 	PauseImage                  model.Image `yaml:"pauseImage,omitempty"`
 	FlannelImage                model.Image `yaml:"flannelImage,omitempty"`
+	DexImage                    model.Image `yaml:"dexImage,omitempty"`
 }
 
 // Part of configuration which is specific to worker nodes
@@ -669,6 +683,7 @@ type Experimental struct {
 	NodeDrainer                 NodeDrainer              `yaml:"nodeDrainer"`
 	NodeLabels                  NodeLabels               `yaml:"nodeLabels"`
 	Plugins                     Plugins                  `yaml:"plugins"`
+	Dex                         model.Dex                `yaml:"dex"`
 	DisableSecurityGroupIngress bool                     `yaml:"disableSecurityGroupIngress"`
 	NodeMonitorGracePeriod      string                   `yaml:"nodeMonitorGracePeriod"`
 	Taints                      model.Taints             `yaml:"taints"`
@@ -1036,8 +1051,7 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 
 	stackConfig.StackTemplateOptions = opts
 
-	baseS3URI := strings.TrimSuffix(opts.S3URI, "/")
-	stackConfig.S3URI = fmt.Sprintf("%s/kube-aws/clusters/%s/exported/stacks", baseS3URI, c.ClusterName)
+	stackConfig.S3URI = strings.TrimSuffix(opts.S3URI, "/")
 
 	if opts.SkipWait {
 		enabled := false
