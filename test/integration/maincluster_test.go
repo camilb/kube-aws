@@ -2664,6 +2664,22 @@ worker:
 			},
 		},
 		{
+			context: "WithSpotFleetEnabledWithCustomIamRole",
+			configYaml: minimalValidConfigYaml + `
+worker:
+  nodePools:
+  - name: pool1
+    spotFleet:
+      targetCapacity: 10
+      iamFleetRoleArn: custom-iam-role
+`,
+			assertConfig: []ConfigTester{
+				hasDefaultExperimentalFeatures,
+				hasDefaultLaunchSpecifications,
+				spotFleetBasedNodePoolHasWaitSignalDisabled,
+			},
+		},
+		{
 			context: "WithSpotFleetWithCustomGp2RootVolumeSettings",
 			configYaml: minimalValidConfigYaml + `
 worker:
@@ -3481,7 +3497,7 @@ worker:
       value: bar
       effect: UnknownEffect
 `,
-			expectedErrorMessage: "Effect must be NoSchedule or PreferNoSchedule, but was UnknownEffect",
+			expectedErrorMessage: "invalid taint effect: UnknownEffect",
 		},
 
 		{
