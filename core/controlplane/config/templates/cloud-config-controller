@@ -197,12 +197,13 @@ coreos:
         --container-runtime={{.ContainerRuntime}} \
         --rkt-path=/usr/bin/rkt \
         --rkt-stage1-image=coreos.com/rkt/stage1-coreos \
-        --node-labels node-role.kubernetes.io/master{{if .Experimental.NodeLabels.Enabled}},{{.Experimental.NodeLabels.String}} \
-        {{end}}--register-with-taints=node.alpha.kubernetes.io/role=master:NoSchedule \
+        --node-labels node-role.kubernetes.io/master{{if .NodeLabels.Enabled}},{{.NodeLabels.String}} \
+        {{end}} \
+        --register-with-taints=node.alpha.kubernetes.io/role=master:NoSchedule \
         --allow-privileged=true \
         --pod-manifest-path=/etc/kubernetes/manifests \
-        --cluster_dns={{.DNSServiceIP}} \
-        --cluster_domain=cluster.local \
+        --cluster-dns={{.DNSServiceIP}} \
+        --cluster-domain=cluster.local \
         --cloud-provider=aws
         Restart=always
         RestartSec=10
@@ -577,12 +578,12 @@ write_files:
       kubectl apply -f "${mfdir}/kube-dns-sa.yaml"
 
       # Deployments
-      for manifest in {kube-dns-de,kube-dns-autoscaler-de,heapster-de{{ if .KubeResourcesAutosave.Enabled }},kube-resources-autosave{{ end }}}.yaml; do
+      for manifest in {kube-dns-de,kube-dns-autoscaler-de,{{ if .Addons.ClusterAutoscaler.Enabled }}cluster-autoscaler-de,{{ end }}heapster-de{{ if .KubeResourcesAutosave.Enabled }},kube-resources-autosave{{ end }}}.yaml; do
           kubectl apply -f "${mfdir}/$manifest"
       done
 
       # Replicationcontrollers
-      kubectl apply -f "${mfdir}/kube-dashboard-rc.yaml"
+      kubectl apply -f "${mfdir}/kube-dashboard-de.yaml"
 
       # Services
       for manifest in {kube-dns,heapster,kube-dashboard}-svc.yaml;do
@@ -990,7 +991,7 @@ write_files:
           -ec \
           'echo decrypting assets
            shopt -s nullglob
-           for encKey in /etc/kubernetes/{ssl,{{if .AuthTokensConfig.HasTokens}}auth{{end}}}/*.enc; do
+           for encKey in /etc/kubernetes/{ssl,{{if .AssetsConfig.HasAnyAuthTokens}}auth{{end}}}/*.enc; do
              echo decrypting $encKey
              f=$(mktemp $encKey.XXXXXXXX)
              /usr/bin/aws \
@@ -1001,6 +1002,20 @@ write_files:
              | base64 -d > $f
              mv -f $f ${encKey%.enc}
            done;
+
+           {{- if .AssetsConfig.HasAnyAuthTokens }}
+           authDir=/etc/kubernetes/auth
+           echo generating $authDir/tokens.csv
+           echo > $authDir/tokens.csv
+
+           {{- if .AssetsConfig.HasTLSBootstrapToken }}
+           echo $(cat $authDir/kubelet-tls-bootstrap-token.tmp),kubelet-bootstrap,10001,system:kubelet-bootstrap >> $authDir/tokens.csv
+           {{- end }}
+           {{- if .AssetsConfig.HasAuthTokens }}
+           cat $authDir/tokens.csv.tmp >> $authDir/tokens.csv
+           {{- end }}
+           {{- end }}
+
            echo done.'
 
       rkt rm --uuid-file=/var/run/coreos/decrypt-assets.uuid || :
@@ -1244,7 +1259,7 @@ write_files:
           - --storage-backend=etcd2
           {{end}}
           - --kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP
-          {{ if .AuthTokensConfig.HasTokens }}
+          {{ if .AssetsConfig.HasAnyAuthTokens }}
           - --token-auth-file=/etc/kubernetes/auth/tokens.csv
           {{ end }}
           {{if .Experimental.AuditLog.Enabled}}
@@ -1304,7 +1319,7 @@ write_files:
           - mountPath: /etc/ssl/certs
             name: ssl-certs-host
             readOnly: true
-          {{if .AuthTokensConfig.HasTokens}}
+          {{if .AssetsConfig.HasAnyAuthTokens}}
           - mountPath: /etc/kubernetes/auth
             name: auth-kubernetes
             readOnly: true
@@ -1326,7 +1341,7 @@ write_files:
         - hostPath:
             path: /usr/share/ca-certificates
           name: ssl-certs-host
-        {{if .AuthTokensConfig.HasTokens}}
+        {{if .AssetsConfig.HasAnyAuthTokens}}
         - hostPath:
             path: /etc/kubernetes/auth
           name: auth-kubernetes
@@ -1515,7 +1530,7 @@ write_files:
                 operator: "Exists"
               containers:
               - name: autoscaler
-                image: {{ .ClusterAutoscalerImage.RepoWithTag }}
+                image: {{ .ClusterProportionalAutoscalerImage.RepoWithTag }}
                 resources:
                     requests:
                         cpu: "20m"
@@ -1780,6 +1795,64 @@ write_files:
                     - --poll-period=300000
                     - --estimator=exponential
 
+  {{if .Addons.ClusterAutoscaler.Enabled}}
+  - path: /srv/kubernetes/manifests/cluster-autoscaler-de.yaml
+    content: |
+        apiVersion: extensions/v1beta1
+        kind: Deployment
+        metadata:
+          name: cluster-autoscaler
+          namespace: kube-system
+          labels:
+            app: cluster-autoscaler
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: cluster-autoscaler
+          template:
+            metadata:
+              labels:
+                app: cluster-autoscaler
+            spec:
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                    - matchExpressions:
+                      - key: "kube-aws.coreos.com/cluster-autoscaler-supported"
+                        operator: "In"
+                        values:
+                        - "true"
+              tolerations:
+              - key: "node.alpha.kubernetes.io/role"
+                operator: "Equal"
+                value: "master"
+                effect: "NoSchedule"
+              containers:
+                - image: {{ .ClusterAutoscalerImage.RepoWithTag }}
+                  name: cluster-autoscaler
+                  resources:
+                    limits:
+                      cpu: 100m
+                      memory: 300Mi
+                    requests:
+                      cpu: 100m
+                      memory: 300Mi
+                  command:
+                    - ./cluster-autoscaler
+                    - --v=4
+                    - --stderrthreshold=info
+                    - --cloud-provider=aws
+                    - --skip-nodes-with-local-storage=false
+                    - --expander=least-waste
+                    - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled
+                  env:
+                    - name: AWS_REGION
+                      value: {{.Region}}
+                  imagePullPolicy: "Always"
+  {{end}}
+
   - path: /srv/kubernetes/manifests/heapster-svc.yaml
     content: |
         kind: Service
@@ -1798,10 +1871,10 @@ write_files:
           selector:
             k8s-app: heapster
 
-  - path: /srv/kubernetes/manifests/kube-dashboard-rc.yaml
+  - path: /srv/kubernetes/manifests/kube-dashboard-de.yaml
     content: |
-        apiVersion: v1
-        kind: ReplicationController
+        apiVersion: extensions/v1beta1
+        kind: Deployment
         metadata:
           name: kubernetes-dashboard
           namespace: kube-system
@@ -1812,7 +1885,8 @@ write_files:
         spec:
           replicas: 1
           selector:
-            k8s-app: kubernetes-dashboard
+            matchLabels:
+              k8s-app: kubernetes-dashboard
           template:
             metadata:
               labels:
@@ -1861,47 +1935,53 @@ write_files:
           - port: 80
             targetPort: 9090
 
-{{ if .AuthTokensConfig.HasTokens }}
-  - path: /etc/kubernetes/auth/tokens.csv{{if .AssetsEncryptionEnabled}}.enc{{end}}
+{{ if .AssetsConfig.HasTLSBootstrapToken }}
+  - path: /etc/kubernetes/auth/kubelet-tls-bootstrap-token.tmp{{if .AssetsEncryptionEnabled}}.enc{{end}}
     encoding: gzip+base64
-    content: {{.AuthTokensConfig.Contents}}
+    content: {{.AssetsConfig.TLSBootstrapToken}}
+{{ end }}
+
+{{ if .AssetsConfig.HasAuthTokens }}
+  - path: /etc/kubernetes/auth/tokens.csv.tmp{{if .AssetsEncryptionEnabled}}.enc{{end}}
+    encoding: gzip+base64
+    content: {{.AssetsConfig.AuthTokens}}
 {{ end }}
 
 {{ if .ManageCertificates }}
   - path: /etc/kubernetes/ssl/ca.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
     encoding: gzip+base64
-    content: {{.TLSConfig.CACert}}
+    content: {{.AssetsConfig.CACert}}
 
 {{ if .Experimental.TLSBootstrap.Enabled }}
   - path: /etc/kubernetes/ssl/ca-key.pem.enc
     encoding: gzip+base64
-    content: {{.TLSConfig.CAKey}}
+    content: {{.AssetsConfig.CAKey}}
 {{ end }}
 
   - path: /etc/kubernetes/ssl/apiserver.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
     encoding: gzip+base64
-    content: {{.TLSConfig.APIServerCert}}
+    content: {{.AssetsConfig.APIServerCert}}
 
   - path: /etc/kubernetes/ssl/apiserver-key.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
     encoding: gzip+base64
-    content: {{.TLSConfig.APIServerKey}}
+    content: {{.AssetsConfig.APIServerKey}}
 
   - path: /etc/kubernetes/ssl/etcd-client.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
     encoding: gzip+base64
-    content: {{.TLSConfig.EtcdClientCert}}
+    content: {{.AssetsConfig.EtcdClientCert}}
 
   - path: /etc/kubernetes/ssl/etcd-client-key.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
     encoding: gzip+base64
-    content: {{.TLSConfig.EtcdClientKey}}
+    content: {{.AssetsConfig.EtcdClientKey}}
 
 {{ if .Experimental.Dex.Enabled }}
   - path: /etc/kubernetes/ssl/dex.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
     encoding: gzip+base64
-    content: {{.TLSConfig.DexCert}}
+    content: {{.AssetsConfig.DexCert}}
 
   - path: /etc/kubernetes/ssl/dex-key.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
     encoding: gzip+base64
-    content: {{.TLSConfig.DexKey}}
+    content: {{.AssetsConfig.DexKey}}
 {{ end }}
 {{ end }}
 

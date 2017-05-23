@@ -6,9 +6,9 @@ import (
 )
 
 type NodePoolConfig struct {
-	AutoScalingGroup                     AutoScalingGroup  `yaml:"autoScalingGroup,omitempty"`
-	ClusterAutoscaler                    ClusterAutoscaler `yaml:"clusterAutoscaler"`
-	SpotFleet                            SpotFleet         `yaml:"spotFleet,omitempty"`
+	Autoscaling                          Autoscaling      `yaml:"autoscaling,omitempty"`
+	AutoScalingGroup                     AutoScalingGroup `yaml:"autoScalingGroup,omitempty"`
+	SpotFleet                            SpotFleet        `yaml:"spotFleet,omitempty"`
 	EC2Instance                          `yaml:",inline"`
 	IAMConfig                            IAMConfig `yaml:"iam,omitempty"`
 	DeprecatedNodePoolManagedIamRoleName string    `yaml:"managedIamRoleName,omitempty"`
@@ -21,16 +21,16 @@ type NodePoolConfig struct {
 	NodeStatusUpdateFrequency            string              `yaml:"nodeStatusUpdateFrequency"`
 	CustomFiles                          []CustomFile        `yaml:"customFiles,omitempty"`
 	CustomSystemdUnits                   []CustomSystemdUnit `yaml:"customSystemdUnits,omitempty"`
+	Gpu                                  Gpu                 `yaml:"gpu"`
 }
 
 type ClusterAutoscaler struct {
-	MinSize     int `yaml:"minSize"`
-	MaxSize     int `yaml:"maxSize"`
+	Enabled     bool `yaml:"enabled,omitempty"`
 	UnknownKeys `yaml:",inline"`
 }
 
-func (a ClusterAutoscaler) Enabled() bool {
-	return a.MinSize > 0
+func (a ClusterAutoscaler) AutoDiscoveryTagKey() string {
+	return "k8s.io/cluster-autoscaler/enabled"
 }
 
 func NewDefaultNodePoolConfig() NodePoolConfig {
@@ -48,6 +48,7 @@ func NewDefaultNodePoolConfig() NodePoolConfig {
 			Tenancy: "default",
 		},
 		SecurityGroupIds: []string{},
+		Gpu:              newDefaultGpu(),
 	}
 }
 
@@ -108,6 +109,10 @@ func (c NodePoolConfig) Valid() error {
 		return errors.New("failed to parse `iam` config: either you set `role.*` options or `instanceProfile.arn` ones but not both")
 	}
 	if err := c.IAMConfig.Validate(); err != nil {
+		return err
+	}
+
+	if err := c.Gpu.Valid(c.InstanceType); err != nil {
 		return err
 	}
 

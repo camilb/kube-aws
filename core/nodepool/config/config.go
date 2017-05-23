@@ -10,7 +10,6 @@ import (
 	yaml "gopkg.in/yaml.v2"
 
 	"errors"
-	"strconv"
 
 	"github.com/kubernetes-incubator/kube-aws/cfnresource"
 	cfg "github.com/kubernetes-incubator/kube-aws/core/controlplane/config"
@@ -30,8 +29,7 @@ type ComputedConfig struct {
 	// Fields computed from Cluster
 	AMI string
 
-	TLSConfig        *cfg.CompactTLSAssets
-	AuthTokensConfig *cfg.CompactAuthTokens
+	AssetsConfig *cfg.CompactAssets
 }
 
 type ProvidedConfig struct {
@@ -80,37 +78,19 @@ func (c ProvidedConfig) StackConfig(opts StackTemplateOptions) (*StackConfig, er
 		return nil, fmt.Errorf("failed to generate config : %v", err)
 	}
 
-	if stackConfig.ManageCertificates {
-		if stackConfig.ComputedConfig.AssetsEncryptionEnabled() {
-			compactAssets, err := cfg.ReadOrCreateCompactTLSAssets(opts.AssetsDir, cfg.KMSConfig{
-				Region:         stackConfig.ComputedConfig.Region,
-				KMSKeyARN:      c.KMSKeyARN,
-				EncryptService: c.ProvidedEncryptService,
-			})
-			if err != nil {
-				return nil, err
-			}
-			stackConfig.ComputedConfig.TLSConfig = compactAssets
-		} else {
-			rawAssets, _ := cfg.ReadOrCreateUnencryptedCompactTLSAssets(opts.AssetsDir)
-			stackConfig.ComputedConfig.TLSConfig = rawAssets
+	if stackConfig.ComputedConfig.AssetsEncryptionEnabled() {
+		compactAssets, err := cfg.ReadOrCreateCompactAssets(opts.AssetsDir, c.ManageCertificates, cfg.KMSConfig{
+			Region:         stackConfig.ComputedConfig.Region,
+			KMSKeyARN:      c.KMSKeyARN,
+			EncryptService: c.ProvidedEncryptService,
+		})
+		if err != nil {
+			return nil, err
 		}
-	}
-
-	if c.DeploymentSettings.Experimental.TLSBootstrap.Enabled {
-		if stackConfig.ComputedConfig.AssetsEncryptionEnabled() {
-			compactAuthTokens, _ := cfg.ReadOrCreateCompactAuthTokens(opts.AssetsDir, cfg.KMSConfig{
-				Region:         stackConfig.ComputedConfig.Region,
-				KMSKeyARN:      c.KMSKeyARN,
-				EncryptService: c.ProvidedEncryptService,
-			})
-			stackConfig.ComputedConfig.AuthTokensConfig = compactAuthTokens
-		} else {
-			rawAuthTokens, _ := cfg.ReadOrCreateUnencryptedCompactAuthTokens(opts.AssetsDir)
-			stackConfig.ComputedConfig.AuthTokensConfig = rawAuthTokens
-		}
+		stackConfig.ComputedConfig.AssetsConfig = compactAssets
 	} else {
-		stackConfig.ComputedConfig.AuthTokensConfig = &cfg.CompactAuthTokens{}
+		rawAssets, _ := cfg.ReadOrCreateUnencryptedCompactAssets(opts.AssetsDir, c.ManageCertificates)
+		stackConfig.ComputedConfig.AssetsConfig = rawAssets
 	}
 
 	if stackConfig.UserDataWorker, err = userdatatemplate.GetString(opts.WorkerTmplFile, stackConfig.ComputedConfig); err != nil {
@@ -329,8 +309,8 @@ func (c ProvidedConfig) ValidateInputs() error {
 		return err
 	}
 
-	if len(c.Subnets) > 1 && c.ClusterAutoscaler.Enabled() {
-		return errors.New("cluster-autoscaler support can't be enabled for a node pool with 2 or more subnets because allowing so" +
+	if len(c.Subnets) > 1 && c.Autoscaling.ClusterAutoscaler.Enabled {
+		return errors.New("cluster-autoscaler can't be enabled for a node pool with 2 or more subnets because allowing so" +
 			"results in unreliability while scaling nodes out. ")
 	}
 
@@ -417,6 +397,14 @@ type WorkerDeploymentSettings struct {
 	DeploymentSettings
 }
 
+func (c WorkerDeploymentSettings) NodeLabels() model.NodeLabels {
+	labels := c.Experimental.NodeLabels
+	if c.ClusterAutoscalerSupport.Enabled {
+		labels["kube-aws.coreos.com/cluster-autoscaler-supported"] = "true"
+	}
+	return labels
+}
+
 func (c WorkerDeploymentSettings) WorkerSecurityGroupRefs() []string {
 	refs := []string{}
 
@@ -444,12 +432,6 @@ func (c WorkerDeploymentSettings) StackTags() map[string]string {
 
 	for k, v := range c.DeploymentSettings.StackTags {
 		tags[k] = v
-	}
-
-	if c.NodePoolConfig.ClusterAutoscaler.Enabled() {
-		tags["kube-aws:cluster-autoscaler:logical-name"] = c.NodePoolConfig.LogicalName()
-		tags["kube-aws:cluster-autoscaler:min-size"] = strconv.Itoa(c.NodePoolConfig.ClusterAutoscaler.MinSize)
-		tags["kube-aws:cluster-autoscaler:max-size"] = strconv.Itoa(c.NodePoolConfig.ClusterAutoscaler.MaxSize)
 	}
 
 	return tags

@@ -58,7 +58,7 @@ func NewDefaultCluster() *Cluster {
 		AwsNodeLabels: AwsNodeLabels{
 			Enabled: false,
 		},
-		ClusterAutoscalerSupport: ClusterAutoscalerSupport{
+		ClusterAutoscalerSupport: model.ClusterAutoscalerSupport{
 			Enabled: false,
 		},
 		TLSBootstrap: TLSBootstrap{
@@ -81,7 +81,7 @@ func NewDefaultCluster() *Cluster {
 		NodeDrainer: NodeDrainer{
 			Enabled: false,
 		},
-		NodeLabels: NodeLabels{},
+		NodeLabels: model.NodeLabels{},
 		Plugins: Plugins{
 			Rbac: Rbac{
 				Enabled: false,
@@ -104,34 +104,35 @@ func NewDefaultCluster() *Cluster {
 
 	return &Cluster{
 		DeploymentSettings: DeploymentSettings{
-			ClusterName:                 "kubernetes",
-			VPCCIDR:                     "10.0.0.0/16",
-			ReleaseChannel:              "stable",
-			K8sVer:                      k8sVer,
-			ContainerRuntime:            "docker",
-			Subnets:                     []model.Subnet{},
-			EIPAllocationIDs:            []string{},
-			MapPublicIPs:                true,
-			Experimental:                experimental,
-			ManageCertificates:          true,
-			HyperkubeImage:              model.Image{Repo: "quay.io/coreos/hyperkube", Tag: k8sVer, RktPullDocker: false},
-			AWSCliImage:                 model.Image{Repo: "quay.io/coreos/awscli", Tag: "master", RktPullDocker: false},
-			CalicoNodeImage:             model.Image{Repo: "quay.io/calico/node", Tag: "v1.2.0", RktPullDocker: false},
-			CalicoCniImage:              model.Image{Repo: "quay.io/calico/cni", Tag: "v1.8.3", RktPullDocker: false},
-			CalicoPolicyControllerImage: model.Image{Repo: "quay.io/calico/kube-policy-controller", Tag: "v0.6.0", RktPullDocker: false},
-			CalicoCtlImage:              model.Image{Repo: "quay.io/calico/ctl", Tag: "v1.2.0", RktPullDocker: false},
-			ClusterAutoscalerImage:      model.Image{Repo: "gcr.io/google_containers/cluster-proportional-autoscaler-amd64", Tag: "1.1.1", RktPullDocker: false},
-			KubeDnsImage:                model.Image{Repo: "gcr.io/google_containers/k8s-dns-kube-dns-amd64", Tag: "1.14.1", RktPullDocker: false},
-			KubeDnsMasqImage:            model.Image{Repo: "gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64", Tag: "1.14.1", RktPullDocker: false},
-			KubeReschedulerImage:        model.Image{Repo: "gcr.io/google-containers/rescheduler", Tag: "v0.3.0", RktPullDocker: false},
-			DnsMasqMetricsImage:         model.Image{Repo: "gcr.io/google_containers/k8s-dns-sidecar-amd64", Tag: "1.14.1", RktPullDocker: false},
-			ExecHealthzImage:            model.Image{Repo: "gcr.io/google_containers/exechealthz-amd64", Tag: "1.2", RktPullDocker: false},
-			HeapsterImage:               model.Image{Repo: "gcr.io/google_containers/heapster", Tag: "v1.3.0", RktPullDocker: false},
-			AddonResizerImage:           model.Image{Repo: "gcr.io/google_containers/addon-resizer", Tag: "1.7", RktPullDocker: false},
-			KubeDashboardImage:          model.Image{Repo: "gcr.io/google_containers/kubernetes-dashboard-amd64", Tag: "v1.6.0", RktPullDocker: false},
-			PauseImage:                  model.Image{Repo: "gcr.io/google_containers/pause-amd64", Tag: "3.0", RktPullDocker: false},
-			FlannelImage:                model.Image{Repo: "quay.io/coreos/flannel", Tag: "v0.7.1", RktPullDocker: false},
-			DexImage:                    model.Image{Repo: "quay.io/coreos/dex", Tag: "v2.4.1", RktPullDocker: false},
+			ClusterName:                        "kubernetes",
+			VPCCIDR:                            "10.0.0.0/16",
+			ReleaseChannel:                     "stable",
+			K8sVer:                             k8sVer,
+			ContainerRuntime:                   "docker",
+			Subnets:                            []model.Subnet{},
+			EIPAllocationIDs:                   []string{},
+			MapPublicIPs:                       true,
+			Experimental:                       experimental,
+			ManageCertificates:                 true,
+			HyperkubeImage:                     model.Image{Repo: "quay.io/coreos/hyperkube", Tag: k8sVer, RktPullDocker: false},
+			AWSCliImage:                        model.Image{Repo: "quay.io/coreos/awscli", Tag: "master", RktPullDocker: false},
+			CalicoNodeImage:                    model.Image{Repo: "quay.io/calico/node", Tag: "v1.2.1", RktPullDocker: false},
+			CalicoCniImage:                     model.Image{Repo: "quay.io/calico/cni", Tag: "v1.8.3", RktPullDocker: false},
+			CalicoPolicyControllerImage:        model.Image{Repo: "quay.io/calico/kube-policy-controller", Tag: "v0.6.0", RktPullDocker: false},
+			CalicoCtlImage:                     model.Image{Repo: "quay.io/calico/ctl", Tag: "v1.2.1", RktPullDocker: false},
+			ClusterAutoscalerImage:             model.Image{Repo: "quay.io/kube-aws/cluster-autoscaler", Tag: "b432362a70f925d94240fe0bb772bd05fb8ad8d6", RktPullDocker: false},
+			ClusterProportionalAutoscalerImage: model.Image{Repo: "gcr.io/google_containers/cluster-proportional-autoscaler-amd64", Tag: "1.1.1", RktPullDocker: false},
+			KubeDnsImage:                       model.Image{Repo: "gcr.io/google_containers/k8s-dns-kube-dns-amd64", Tag: "1.14.2", RktPullDocker: false},
+			KubeDnsMasqImage:                   model.Image{Repo: "gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64", Tag: "1.14.2", RktPullDocker: false},
+			KubeReschedulerImage:               model.Image{Repo: "gcr.io/google-containers/rescheduler", Tag: "v0.3.0", RktPullDocker: false},
+			DnsMasqMetricsImage:                model.Image{Repo: "gcr.io/google_containers/k8s-dns-sidecar-amd64", Tag: "1.14.2", RktPullDocker: false},
+			ExecHealthzImage:                   model.Image{Repo: "gcr.io/google_containers/exechealthz-amd64", Tag: "1.2", RktPullDocker: false},
+			HeapsterImage:                      model.Image{Repo: "gcr.io/google_containers/heapster", Tag: "v1.3.0", RktPullDocker: false},
+			AddonResizerImage:                  model.Image{Repo: "gcr.io/google_containers/addon-resizer", Tag: "1.7", RktPullDocker: false},
+			KubeDashboardImage:                 model.Image{Repo: "gcr.io/google_containers/kubernetes-dashboard-amd64", Tag: "v1.6.1", RktPullDocker: false},
+			PauseImage:                         model.Image{Repo: "gcr.io/google_containers/pause-amd64", Tag: "3.0", RktPullDocker: false},
+			FlannelImage:                       model.Image{Repo: "quay.io/coreos/flannel", Tag: "v0.7.1", RktPullDocker: false},
+			DexImage:                           model.Image{Repo: "quay.io/coreos/dex", Tag: "v2.4.1", RktPullDocker: false},
 		},
 		KubeClusterSettings: KubeClusterSettings{
 			DNSServiceIP: "10.3.0.10",
@@ -494,24 +495,25 @@ type DeploymentSettings struct {
 	WaitSignal             WaitSignal        `yaml:"waitSignal"`
 
 	// Images repository
-	HyperkubeImage              model.Image `yaml:"hyperkubeImage,omitempty"`
-	AWSCliImage                 model.Image `yaml:"awsCliImage,omitempty"`
-	CalicoNodeImage             model.Image `yaml:"calicoNodeImage,omitempty"`
-	CalicoCniImage              model.Image `yaml:"calicoCniImage,omitempty"`
-	CalicoCtlImage              model.Image `yaml:"calicoCtlImage,omitempty"`
-	CalicoPolicyControllerImage model.Image `yaml:"calicoPolicyControllerImage,omitempty"`
-	ClusterAutoscalerImage      model.Image `yaml:"clusterAutoscalerImage,omitempty"`
-	KubeDnsImage                model.Image `yaml:"kubeDnsImage,omitempty"`
-	KubeDnsMasqImage            model.Image `yaml:"kubeDnsMasqImage,omitempty"`
-	KubeReschedulerImage        model.Image `yaml:"kubeReschedulerImage,omitempty"`
-	DnsMasqMetricsImage         model.Image `yaml:"dnsMasqMetricsImage,omitempty"`
-	ExecHealthzImage            model.Image `yaml:"execHealthzImage,omitempty"`
-	HeapsterImage               model.Image `yaml:"heapsterImage,omitempty"`
-	AddonResizerImage           model.Image `yaml:"addonResizerImage,omitempty"`
-	KubeDashboardImage          model.Image `yaml:"kubeDashboardImage,omitempty"`
-	PauseImage                  model.Image `yaml:"pauseImage,omitempty"`
-	FlannelImage                model.Image `yaml:"flannelImage,omitempty"`
-	DexImage                    model.Image `yaml:"dexImage,omitempty"`
+	HyperkubeImage                     model.Image `yaml:"hyperkubeImage,omitempty"`
+	AWSCliImage                        model.Image `yaml:"awsCliImage,omitempty"`
+	CalicoNodeImage                    model.Image `yaml:"calicoNodeImage,omitempty"`
+	CalicoCniImage                     model.Image `yaml:"calicoCniImage,omitempty"`
+	CalicoCtlImage                     model.Image `yaml:"calicoCtlImage,omitempty"`
+	CalicoPolicyControllerImage        model.Image `yaml:"calicoPolicyControllerImage,omitempty"`
+	ClusterAutoscalerImage             model.Image `yaml:"clusterAutoscalerImage,omitempty"`
+	ClusterProportionalAutoscalerImage model.Image `yaml:"clusterProportionalAutoscalerImage,omitempty"`
+	KubeDnsImage                       model.Image `yaml:"kubeDnsImage,omitempty"`
+	KubeDnsMasqImage                   model.Image `yaml:"kubeDnsMasqImage,omitempty"`
+	KubeReschedulerImage               model.Image `yaml:"kubeReschedulerImage,omitempty"`
+	DnsMasqMetricsImage                model.Image `yaml:"dnsMasqMetricsImage,omitempty"`
+	ExecHealthzImage                   model.Image `yaml:"execHealthzImage,omitempty"`
+	HeapsterImage                      model.Image `yaml:"heapsterImage,omitempty"`
+	AddonResizerImage                  model.Image `yaml:"addonResizerImage,omitempty"`
+	KubeDashboardImage                 model.Image `yaml:"kubeDashboardImage,omitempty"`
+	PauseImage                         model.Image `yaml:"pauseImage,omitempty"`
+	FlannelImage                       model.Image `yaml:"flannelImage,omitempty"`
+	DexImage                           model.Image `yaml:"dexImage,omitempty"`
 }
 
 // Part of configuration which is specific to worker nodes
@@ -673,24 +675,26 @@ type Cluster struct {
 }
 
 type Experimental struct {
-	Admission                   Admission                `yaml:"admission"`
-	AuditLog                    AuditLog                 `yaml:"auditLog"`
-	Authentication              Authentication           `yaml:"authentication"`
-	AwsEnvironment              AwsEnvironment           `yaml:"awsEnvironment"`
-	AwsNodeLabels               AwsNodeLabels            `yaml:"awsNodeLabels"`
-	ClusterAutoscalerSupport    ClusterAutoscalerSupport `yaml:"clusterAutoscalerSupport"`
-	TLSBootstrap                TLSBootstrap             `yaml:"tlsBootstrap"`
-	EphemeralImageStorage       EphemeralImageStorage    `yaml:"ephemeralImageStorage"`
-	Kube2IamSupport             Kube2IamSupport          `yaml:"kube2IamSupport,omitempty"`
-	LoadBalancer                LoadBalancer             `yaml:"loadBalancer"`
-	TargetGroup                 TargetGroup              `yaml:"targetGroup"`
-	NodeDrainer                 NodeDrainer              `yaml:"nodeDrainer"`
-	NodeLabels                  NodeLabels               `yaml:"nodeLabels"`
-	Plugins                     Plugins                  `yaml:"plugins"`
-	Dex                         model.Dex                `yaml:"dex"`
-	DisableSecurityGroupIngress bool                     `yaml:"disableSecurityGroupIngress"`
-	NodeMonitorGracePeriod      string                   `yaml:"nodeMonitorGracePeriod"`
-	Taints                      model.Taints             `yaml:"taints"`
+	Admission      Admission      `yaml:"admission"`
+	AuditLog       AuditLog       `yaml:"auditLog"`
+	Authentication Authentication `yaml:"authentication"`
+	AwsEnvironment AwsEnvironment `yaml:"awsEnvironment"`
+	AwsNodeLabels  AwsNodeLabels  `yaml:"awsNodeLabels"`
+	// When cluster-autoscaler support is enabled, not only controller nodes but this node pool is also given
+	// a node label and IAM permissions to run cluster-autoscaler
+	ClusterAutoscalerSupport    model.ClusterAutoscalerSupport `yaml:"clusterAutoscalerSupport"`
+	TLSBootstrap                TLSBootstrap                   `yaml:"tlsBootstrap"`
+	EphemeralImageStorage       EphemeralImageStorage          `yaml:"ephemeralImageStorage"`
+	Kube2IamSupport             Kube2IamSupport                `yaml:"kube2IamSupport,omitempty"`
+	LoadBalancer                LoadBalancer                   `yaml:"loadBalancer"`
+	TargetGroup                 TargetGroup                    `yaml:"targetGroup"`
+	NodeDrainer                 NodeDrainer                    `yaml:"nodeDrainer"`
+	NodeLabels                  model.NodeLabels               `yaml:"nodeLabels"`
+	Plugins                     Plugins                        `yaml:"plugins"`
+	Dex                         model.Dex                      `yaml:"dex"`
+	DisableSecurityGroupIngress bool                           `yaml:"disableSecurityGroupIngress"`
+	NodeMonitorGracePeriod      string                         `yaml:"nodeMonitorGracePeriod"`
+	Taints                      model.Taints                   `yaml:"taints"`
 	model.UnknownKeys           `yaml:",inline"`
 }
 
@@ -727,10 +731,6 @@ type AwsNodeLabels struct {
 	Enabled bool `yaml:"enabled"`
 }
 
-type ClusterAutoscalerSupport struct {
-	Enabled bool `yaml:"enabled"`
-}
-
 type TLSBootstrap struct {
 	Enabled bool `yaml:"enabled"`
 }
@@ -752,27 +752,6 @@ type KubeResourcesAutosave struct {
 
 type NodeDrainer struct {
 	Enabled bool `yaml:"enabled"`
-}
-
-type NodeLabels map[string]string
-
-func (l NodeLabels) Enabled() bool {
-	return len(l) > 0
-}
-
-// Returns key=value pairs separated by ',' to be passed to kubelet's `--node-labels` flag
-func (l NodeLabels) String() string {
-	labels := []string{}
-	keys := []string{}
-	for k, _ := range l {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		v := l[k]
-		labels = append(labels, fmt.Sprintf("%s=%s", k, v))
-	}
-	return strings.Join(labels, ",")
 }
 
 type LoadBalancer struct {
@@ -981,23 +960,10 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 		return nil, err
 	}
 
-	var compactAssets *CompactTLSAssets
-	var compactAuthTokens *CompactAuthTokens
-
-	// Automatically generates the auth token file if it doesn't exist
-	if !AuthTokensFileExists(opts.AssetsDir) {
-		createBootstrapToken := c.DeploymentSettings.Experimental.TLSBootstrap.Enabled
-		created, err := CreateRawAuthTokens(createBootstrapToken, opts.AssetsDir)
-		if err != nil {
-			return nil, err
-		}
-		if created {
-			fmt.Println("INFO: Created initial auth token file in ./credentials/tokens.csv")
-		}
-	}
+	var compactAssets *CompactAssets
 
 	if c.AssetsEncryptionEnabled() {
-		compactAuthTokens, err = ReadOrCreateCompactAuthTokens(opts.AssetsDir, KMSConfig{
+		compactAssets, err = ReadOrCreateCompactAssets(opts.AssetsDir, c.ManageCertificates, KMSConfig{
 			Region:         stackConfig.Config.Region,
 			KMSKeyARN:      c.KMSKeyARN,
 			EncryptService: c.ProvidedEncryptService,
@@ -1005,52 +971,26 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		stackConfig.Config.AuthTokensConfig = compactAuthTokens
+
+		stackConfig.Config.AssetsConfig = compactAssets
 	} else {
-		rawAuthTokens, err := ReadOrCreateUnencryptedCompactAuthTokens(opts.AssetsDir)
+		rawAssets, err := ReadOrCreateUnencryptedCompactAssets(opts.AssetsDir, c.ManageCertificates)
 		if err != nil {
 			return nil, err
 		}
-		stackConfig.Config.AuthTokensConfig = rawAuthTokens
-	}
-	if c.ManageCertificates {
-		if c.AssetsEncryptionEnabled() {
-			compactAssets, err = ReadOrCreateCompactTLSAssets(opts.AssetsDir, KMSConfig{
-				Region:         stackConfig.Config.Region,
-				KMSKeyARN:      c.KMSKeyARN,
-				EncryptService: c.ProvidedEncryptService,
-			})
-			if err != nil {
-				return nil, err
-			}
 
-			stackConfig.Config.TLSConfig = compactAssets
-		} else {
-			rawAssets, err := ReadOrCreateUnencryptedCompactTLSAssets(opts.AssetsDir)
-			if err != nil {
-				return nil, err
-			}
-
-			stackConfig.Config.TLSConfig = rawAssets
-		}
+		stackConfig.Config.AssetsConfig = rawAssets
 	}
 
 	if c.Experimental.TLSBootstrap.Enabled && !c.Experimental.Plugins.Rbac.Enabled {
 		fmt.Println(`WARNING: enabling cluster-level TLS bootstrapping without RBAC is not recommended. See https://kubernetes.io/docs/admin/kubelet-tls-bootstrapping/ for more information`)
 	}
+
 	if stackConfig.UserDataController, err = userdatatemplate.GetString(opts.ControllerTmplFile, stackConfig.Config); err != nil {
 		return nil, fmt.Errorf("failed to render controller cloud config: %v", err)
 	}
 	if stackConfig.UserDataEtcd, err = userdatatemplate.GetString(opts.EtcdTmplFile, stackConfig.Config); err != nil {
 		return nil, fmt.Errorf("failed to render etcd cloud config: %v", err)
-	}
-
-	if len(stackConfig.Config.AuthTokensConfig.KubeletBootstrapToken) == 0 && c.DeploymentSettings.Experimental.TLSBootstrap.Enabled {
-		bootstrapRecord, err := RandomBootstrapTokenRecord()
-		if err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("kubelet bootstrap token not found in ./credentials/tokens.csv.\n\nTo fix this, please append the following line to ./credentials/tokens.csv:\n%s", bootstrapRecord)
 	}
 
 	stackConfig.StackTemplateOptions = opts
@@ -1073,8 +1013,7 @@ type Config struct {
 
 	EtcdNodes []derived.EtcdNode
 
-	AuthTokensConfig *CompactAuthTokens
-	TLSConfig        *CompactTLSAssets
+	AssetsConfig *CompactAssets
 }
 
 // StackName returns the logical name of a CloudFormation stack resource in a root stack template
@@ -1143,6 +1082,14 @@ func (c Cluster) NestedStackName() string {
 	// Convert stack name into something valid as a cfn resource name or
 	// we'll end up with cfn errors like "Template format error: Resource name test5-controlplane is non alphanumeric"
 	return strings.Title(strings.Replace(c.StackName(), "-", "", -1))
+}
+
+func (c Cluster) NodeLabels() model.NodeLabels {
+	labels := c.Experimental.NodeLabels
+	if c.Addons.ClusterAutoscaler.Enabled {
+		labels["kube-aws.coreos.com/cluster-autoscaler-supported"] = "true"
+	}
+	return labels
 }
 
 // Etcdadm returns the content of the etcdadm script to be embedded into cloud-config-etcd
