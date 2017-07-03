@@ -1,3 +1,21 @@
+{{ define "instance" -}}
+{{- $S3URI := self.Parts.s3.Asset.S3URL -}}
+#!/bin/bash -xe
+ . /etc/environment
+export COREOS_PRIVATE_IPV4 COREOS_PRIVATE_IPV6 COREOS_PUBLIC_IPV4 COREOS_PUBLIC_IPV6
+REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')
+USERDATA_FILE=userdata-controller
+while ! /usr/bin/rkt run \
+   --net=host \
+   --volume=dns,kind=host,source=/etc/resolv.conf,readOnly=true --mount volume=dns,target=/etc/resolv.conf  \
+   --volume=awsenv,kind=host,source=/var/run/coreos,readOnly=false --mount volume=awsenv,target=/var/run/coreos \
+   --trust-keys-from-https \
+   {{.AWSCliImage.Options}}{{.AWSCliImage.RktRepo}} --exec=aws -- s3 --region $REGION  cp {{$S3URI}} /var/run/coreos/$USERDATA_FILE; do
+  sleep 1
+done
+exec /usr/bin/coreos-cloudinit --from-file /var/run/coreos/$USERDATA_FILE
+{{ end }}
+{{ define "s3" -}}
 #cloud-config
 coreos:
   update:
@@ -23,6 +41,34 @@ coreos:
         {{ $l }}
         {{- end }}
 {{- end}}
+{{if .CloudWatchLogging.Enabled}}
+    - name: journald-cloudwatch-logs.service
+      command: start
+      content: |
+        [Unit]
+        Description=Docker run journald-cloudwatch-logs to send journald logs to CloudWatch
+        Requires=network-online.target
+        After=network-online.target
+
+        [Service]
+        ExecStartPre=-/usr/bin/mkdir -p /var/journald-cloudwatch-logs
+        ExecStart=/usr/bin/rkt run \
+                  --insecure-options=image \
+                  --volume resolv,kind=host,source=/etc/resolv.conf,readOnly=true \
+                  --mount volume=resolv,target=/etc/resolv.conf \
+                  --volume journald-cloudwatch-logs,kind=host,source=/var/journald-cloudwatch-logs \
+                  --mount volume=journald-cloudwatch-logs,target=/var/journald-cloudwatch-logs \
+                  --volume journal,kind=host,source=/var/log/journal,readOnly=true \
+                  --mount volume=journal,target=/var/log/journal \
+                  --volume machine-id,kind=host,source=/etc/machine-id,readOnly=true \
+                  --mount volume=machine-id,target=/etc/machine-id \
+                  {{ .JournaldCloudWatchLogsImage.RktRepo }} -- {{.ClusterName}}
+        Restart=always
+        RestartSec=60s
+
+        [Install]
+        WantedBy=multi-user.target
+{{end}}
     - name: cfn-etcd-environment.service
       enable: true
       command: start
@@ -1935,6 +1981,8 @@ write_files:
             metadata:
               labels:
                 app: cluster-autoscaler
+              annotations:
+                scheduler.alpha.kubernetes.io/critical-pod: ''
             spec:
               affinity:
                 nodeAffinity:
@@ -2290,3 +2338,5 @@ write_files:
             userID: "{{ $staticPassword.UserId }}"
          {{ end -}}
   {{ end }}
+
+{{ end }}

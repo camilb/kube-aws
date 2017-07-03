@@ -17,7 +17,6 @@ import (
 
 	"github.com/kubernetes-incubator/kube-aws/cfnresource"
 	"github.com/kubernetes-incubator/kube-aws/coreos/amiregistry"
-	"github.com/kubernetes-incubator/kube-aws/filereader/userdatatemplate"
 	"github.com/kubernetes-incubator/kube-aws/gzipcompressor"
 	"github.com/kubernetes-incubator/kube-aws/model"
 	"github.com/kubernetes-incubator/kube-aws/model/derived"
@@ -104,16 +103,20 @@ func NewDefaultCluster() *Cluster {
 
 	return &Cluster{
 		DeploymentSettings: DeploymentSettings{
-			ClusterName:                        "kubernetes",
-			VPCCIDR:                            "10.0.0.0/16",
-			ReleaseChannel:                     "stable",
-			K8sVer:                             k8sVer,
-			ContainerRuntime:                   "docker",
-			Subnets:                            []model.Subnet{},
-			EIPAllocationIDs:                   []string{},
-			MapPublicIPs:                       true,
-			Experimental:                       experimental,
-			ManageCertificates:                 true,
+			ClusterName:        "kubernetes",
+			VPCCIDR:            "10.0.0.0/16",
+			ReleaseChannel:     "stable",
+			K8sVer:             k8sVer,
+			ContainerRuntime:   "docker",
+			Subnets:            []model.Subnet{},
+			EIPAllocationIDs:   []string{},
+			MapPublicIPs:       true,
+			Experimental:       experimental,
+			ManageCertificates: true,
+			CloudWatchLogging: CloudWatchLogging{
+				Enabled:         false,
+				RetentionInDays: 7,
+			},
 			HyperkubeImage:                     model.Image{Repo: "quay.io/coreos/hyperkube", Tag: k8sVer, RktPullDocker: false},
 			AWSCliImage:                        model.Image{Repo: "quay.io/coreos/awscli", Tag: "master", RktPullDocker: false},
 			CalicoNodeImage:                    model.Image{Repo: "quay.io/calico/node", Tag: "v1.2.1", RktPullDocker: false},
@@ -133,6 +136,7 @@ func NewDefaultCluster() *Cluster {
 			PauseImage:                         model.Image{Repo: "gcr.io/google_containers/pause-amd64", Tag: "3.0", RktPullDocker: false},
 			FlannelImage:                       model.Image{Repo: "quay.io/coreos/flannel", Tag: "v0.7.1", RktPullDocker: false},
 			DexImage:                           model.Image{Repo: "quay.io/coreos/dex", Tag: "v2.4.1", RktPullDocker: false},
+			JournaldCloudWatchLogsImage:        model.Image{Repo: "jollinshead/journald-cloudwatch-logs", Tag: "0.1", RktPullDocker: true},
 		},
 		KubeClusterSettings: KubeClusterSettings{
 			DNSServiceIP: "10.3.0.10",
@@ -486,6 +490,7 @@ type DeploymentSettings struct {
 	Experimental           Experimental      `yaml:"experimental"`
 	ManageCertificates     bool              `yaml:"manageCertificates,omitempty"`
 	WaitSignal             WaitSignal        `yaml:"waitSignal"`
+	CloudWatchLogging      `yaml:"cloudWatchLogging,omitempty"`
 
 	// Images repository
 	HyperkubeImage                     model.Image `yaml:"hyperkubeImage,omitempty"`
@@ -507,6 +512,7 @@ type DeploymentSettings struct {
 	PauseImage                         model.Image `yaml:"pauseImage,omitempty"`
 	FlannelImage                       model.Image `yaml:"flannelImage,omitempty"`
 	DexImage                           model.Image `yaml:"dexImage,omitempty"`
+	JournaldCloudWatchLogsImage        model.Image `yaml:"journaldCloudWatchLogsImage,omitempty"`
 }
 
 // Part of configuration which is specific to worker nodes
@@ -743,6 +749,11 @@ type KubeResourcesAutosave struct {
 	S3Path  string
 }
 
+type CloudWatchLogging struct {
+	Enabled         bool `yaml:"enabled"`
+	RetentionInDays int  `yaml:"retentionInDays"`
+}
+
 type LoadBalancer struct {
 	Enabled          bool     `yaml:"enabled"`
 	Names            []string `yaml:"names"`
@@ -933,15 +944,7 @@ func (c Cluster) StackConfig(opts StackTemplateOptions) (*StackConfig, error) {
 		fmt.Println(`WARNING: enabling cluster-level TLS bootstrapping without RBAC is not recommended. See https://kubernetes.io/docs/admin/kubelet-tls-bootstrapping/ for more information`)
 	}
 
-	if stackConfig.UserDataController, err = userdatatemplate.GetString(opts.ControllerTmplFile, stackConfig.Config); err != nil {
-		return nil, fmt.Errorf("failed to render controller cloud config: %v", err)
-	}
-	if stackConfig.UserDataEtcd, err = userdatatemplate.GetString(opts.EtcdTmplFile, stackConfig.Config); err != nil {
-		return nil, fmt.Errorf("failed to render etcd cloud config: %v", err)
-	}
-
 	stackConfig.StackTemplateOptions = opts
-
 	stackConfig.S3URI = strings.TrimSuffix(opts.S3URI, "/")
 
 	if opts.SkipWait {
