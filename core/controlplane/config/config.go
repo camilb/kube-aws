@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	k8sVer = "v1.6.3_coreos.0"
+	k8sVer = "v1.7.0_coreos.0"
 
 	credentialsDir = "credentials"
 	userDataDir    = "userdata"
@@ -123,15 +123,15 @@ func NewDefaultCluster() *Cluster {
 			CalicoCniImage:                     model.Image{Repo: "quay.io/calico/cni", Tag: "v1.8.3", RktPullDocker: false},
 			CalicoPolicyControllerImage:        model.Image{Repo: "quay.io/calico/kube-policy-controller", Tag: "v0.6.0", RktPullDocker: false},
 			CalicoCtlImage:                     model.Image{Repo: "quay.io/calico/ctl", Tag: "v1.2.1", RktPullDocker: false},
-			ClusterAutoscalerImage:             model.Image{Repo: "quay.io/kube-aws/cluster-autoscaler", Tag: "8b7d410fc5b9dbc9b7c707994259770f15613676", RktPullDocker: false},
+			ClusterAutoscalerImage:             model.Image{Repo: "gcr.io/google_containers/cluster-autoscaler", Tag: "v0.6.0", RktPullDocker: false},
 			ClusterProportionalAutoscalerImage: model.Image{Repo: "gcr.io/google_containers/cluster-proportional-autoscaler-amd64", Tag: "1.1.2", RktPullDocker: false},
-			KubeDnsImage:                       model.Image{Repo: "gcr.io/google_containers/k8s-dns-kube-dns-amd64", Tag: "1.14.2", RktPullDocker: false},
-			KubeDnsMasqImage:                   model.Image{Repo: "gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64", Tag: "1.14.2", RktPullDocker: false},
+			KubeDnsImage:                       model.Image{Repo: "gcr.io/google_containers/k8s-dns-kube-dns-amd64", Tag: "1.14.4", RktPullDocker: false},
+			KubeDnsMasqImage:                   model.Image{Repo: "gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64", Tag: "1.14.4", RktPullDocker: false},
 			KubeReschedulerImage:               model.Image{Repo: "gcr.io/google-containers/rescheduler", Tag: "v0.3.0", RktPullDocker: false},
-			DnsMasqMetricsImage:                model.Image{Repo: "gcr.io/google_containers/k8s-dns-sidecar-amd64", Tag: "1.14.2", RktPullDocker: false},
+			DnsMasqMetricsImage:                model.Image{Repo: "gcr.io/google_containers/k8s-dns-sidecar-amd64", Tag: "1.14.4", RktPullDocker: false},
 			ExecHealthzImage:                   model.Image{Repo: "gcr.io/google_containers/exechealthz-amd64", Tag: "1.2", RktPullDocker: false},
-			HeapsterImage:                      model.Image{Repo: "gcr.io/google_containers/heapster", Tag: "v1.3.0", RktPullDocker: false},
-			AddonResizerImage:                  model.Image{Repo: "gcr.io/google_containers/addon-resizer", Tag: "1.7", RktPullDocker: false},
+			HeapsterImage:                      model.Image{Repo: "gcr.io/google_containers/heapster", Tag: "v1.4.0", RktPullDocker: false},
+			AddonResizerImage:                  model.Image{Repo: "gcr.io/google_containers/addon-resizer", Tag: "2.0", RktPullDocker: false},
 			KubeDashboardImage:                 model.Image{Repo: "gcr.io/google_containers/kubernetes-dashboard-amd64", Tag: "v1.6.1", RktPullDocker: false},
 			PauseImage:                         model.Image{Repo: "gcr.io/google_containers/pause-amd64", Tag: "3.0", RktPullDocker: false},
 			FlannelImage:                       model.Image{Repo: "quay.io/coreos/flannel", Tag: "v0.7.1", RktPullDocker: false},
@@ -752,6 +752,13 @@ type KubeResourcesAutosave struct {
 type CloudWatchLogging struct {
 	Enabled         bool `yaml:"enabled"`
 	RetentionInDays int  `yaml:"retentionInDays"`
+}
+
+func (c *CloudWatchLogging) MergeIfEmpty(other CloudWatchLogging) {
+	if c.Enabled == false && c.RetentionInDays == 0 {
+		c.Enabled = other.Enabled
+		c.RetentionInDays = other.RetentionInDays
+	}
 }
 
 type LoadBalancer struct {

@@ -610,7 +610,7 @@ write_files:
       {{ end }}
 
       {{ if .Experimental.NodeDrainer.Enabled }}
-      kubectl apply -f "${mfdir}/kube-node-drainer-asg-ds.yaml"
+      kubectl apply -f "${mfdir}/kube-node-drainer-ds.yaml"
       {{ end }}
 
       # Configmaps
@@ -619,6 +619,9 @@ write_files:
       # Serviceaccounts
       kubectl apply -f "${mfdir}/kube-dns-sa.yaml"
       kubectl apply -f "${mfdir}/heapster-sa.yaml"
+
+      # Install tiller by default
+      kubectl apply -f "${mfdir}/tiller.yaml"
 
       # Deployments
       for manifest in {kube-dns-de,kube-dns-autoscaler-de,{{ if .Addons.ClusterAutoscaler.Enabled }}cluster-autoscaler-de,{{ end }}heapster-de{{ if .KubeResourcesAutosave.Enabled }},kube-resources-autosave{{ end }}}.yaml; do
@@ -1065,7 +1068,7 @@ write_files:
 {{ end }}
 
 {{if .Experimental.NodeDrainer.Enabled}}
-  - path: /srv/kubernetes/manifests/kube-node-drainer-asg-ds.yaml
+  - path: /srv/kubernetes/manifests/kube-node-drainer-ds.yaml
     content: |
         kind: DaemonSet
         apiVersion: extensions/v1beta1
@@ -1126,26 +1129,59 @@ write_files:
                     REGION=$(metadata dynamic/instance-identity/document | jq -r .region)
                     [ -n "${REGION}" ]
 
-                    while sleep 30; do
-                      STATE=$(asg describe-auto-scaling-instances --region "${REGION}" --instance-ids "${INSTANCE_ID}" | jq -r '.AutoScalingInstances[].LifecycleState')
-                      if [ ! "${STATE}" = Terminating:Wait ]; then
-                        continue
+                    # Not customizable (for now)
+                    SPOT_POLL_INTERVAL=5
+                    SG_POLL_INTERVAL=30
+
+                    # Used to control when to execute each termination check
+                    secs=0
+
+                    # Used to identify which was the source that requested the instance termination ('spot' or 'asg', for now)
+                    termination_source=''
+
+                    # Instance termination detection loop
+                    while sleep ${SPOT_POLL_INTERVAL}; do
+                      secs=$((secs + SPOT_POLL_INTERVAL))
+
+                      # Spot instance termination check
+                      http_status=$(curl -o /dev/null -w '%{http_code}' -sL http://169.254.169.254/latest/meta-data/spot/termination-time)
+                      if [ "${http_status}" -eq 200 ]; then
+                        termination_source=spot
+                        break
                       fi
-                      echo Node is in Terminating:Wait state, draining it
+
+                      if [ $((secs % SG_POLL_INTERVAL)) -eq 0 ]; then
+                        # Reset counter to avoid overflow
+                        secs=0
+
+                        # AutoScalingGroup lifecycle check
+                        state=$(asg describe-auto-scaling-instances --region "${REGION}" --instance-ids "${INSTANCE_ID}" | jq -r '.AutoScalingInstances[].LifecycleState')
+                        if [ "${state}" = Terminating:Wait ]; then
+                          termination_source=asg
+                          break
+                        fi
+                      fi
+                    done
+
+                    # Node draining loop
+                    while true; do
+                      echo Node is terminating, draining it...
 
                       if ! kubectl drain --ignore-daemonsets=true --delete-local-data=true --force=true --timeout=60s "${NODE_NAME}"; then
                         echo Not all pods on this host can be evicted, will try again
                         continue
                       fi
 
-                      echo All evictable pods are gone, notifying AutoScalingGroup that instance ${INSTANCE_ID} can be shutdown
-                      ASG_NAME=$(asg describe-auto-scaling-instances --instance-ids "${INSTANCE_ID}" | jq -r '.AutoScalingInstances[].AutoScalingGroupName')
-                      HOOK_NAME=$(asg describe-lifecycle-hooks --auto-scaling-group-name "${ASG_NAME}" | jq -r '.LifecycleHooks[].LifecycleHookName' | grep -i nodedrainer)
+                      if [ "${termination_source}" == asg ]; then
+                        echo All evictable pods are gone, notifying AutoScalingGroup that instance ${INSTANCE_ID} can be shutdown
+                        ASG_NAME=$(asg describe-auto-scaling-instances --instance-ids "${INSTANCE_ID}" | jq -r '.AutoScalingInstances[].AutoScalingGroupName')
+                        HOOK_NAME=$(asg describe-lifecycle-hooks --auto-scaling-group-name "${ASG_NAME}" | jq -r '.LifecycleHooks[].LifecycleHookName' | grep -i nodedrainer)
 
-                      echo Sending notification to ASG_NAME=${ASG_NAME} HOOK_NAME=${HOOK_NAME}
-                      asg complete-lifecycle-action --lifecycle-action-result CONTINUE --instance-id "${INSTANCE_ID}" --lifecycle-hook-name "${HOOK_NAME}" --auto-scaling-group-name "${ASG_NAME}"
+                        echo Sending notification to ASG_NAME=${ASG_NAME} HOOK_NAME=${HOOK_NAME}
+                        asg complete-lifecycle-action --lifecycle-action-result CONTINUE --instance-id "${INSTANCE_ID}" --lifecycle-hook-name "${HOOK_NAME}" --auto-scaling-group-name "${ASG_NAME}"
+                      fi
 
-                      # sleep 5 mins + 1 mins, expecting that instance will be shut down in this time
+                      # Expect instance will be shut down in 5 minutes
                       sleep 300
                     done
                   volumeMounts:
@@ -1888,23 +1924,23 @@ write_files:
         apiVersion: extensions/v1beta1
         kind: Deployment
         metadata:
-          name: heapster-v1.3.0
+          name: heapster-v1.4.0
           namespace: kube-system
           labels:
             k8s-app: heapster
             kubernetes.io/cluster-service: "true"
-            version: v1.3.0
+            version: v1.4.0
         spec:
           replicas: 1
           selector:
             matchLabels:
               k8s-app: heapster
-              version: v1.3.0
+              version: v1.4.0
           template:
             metadata:
               labels:
                 k8s-app: heapster
-                version: v1.3.0
+                version: v1.4.0
               annotations:
                 scheduler.alpha.kubernetes.io/critical-pod: ''
             spec:
@@ -1956,11 +1992,9 @@ write_files:
                     - --extra-cpu=4m
                     - --memory=200Mi
                     - --extra-memory=4Mi
-                    - --threshold=5
-                    - --deployment=heapster-v1.3.0
+                    - --deployment=heapster-v1.4.0
                     - --container=heapster
                     - --poll-period=300000
-                    - --estimator=exponential
 
   {{if .Addons.ClusterAutoscaler.Enabled}}
   - path: /srv/kubernetes/manifests/cluster-autoscaler-de.yaml
@@ -1998,6 +2032,8 @@ write_files:
                 operator: "Equal"
                 value: "master"
                 effect: "NoSchedule"
+              - key: "CriticalAddonsOnly"
+                operator: "Exists"
               containers:
                 - image: {{ .ClusterAutoscalerImage.RepoWithTag }}
                   name: cluster-autoscaler
@@ -2015,7 +2051,7 @@ write_files:
                     - --cloud-provider=aws
                     - --skip-nodes-with-local-storage=false
                     - --expander=least-waste
-                    - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled
+                    - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,kubernetes.io/cluster/{{.ClusterName}}
                   env:
                     - name: AWS_REGION
                       value: {{.Region}}
@@ -2103,6 +2139,86 @@ write_files:
           ports:
           - port: 80
             targetPort: 9090
+
+  - path: /srv/kubernetes/manifests/tiller.yaml
+    content: |
+        apiVersion: extensions/v1beta1
+        kind: Deployment
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: helm
+            name: tiller
+          name: tiller-deploy
+          namespace: kube-system
+        spec:
+          strategy: {}
+          template:
+            metadata:
+              creationTimestamp: null
+              labels:
+                app: helm
+                name: tiller
+              # Addition to the default tiller deployment for prioritizing tiller over other non-critical pods with rescheduler
+              annotations:
+                scheduler.alpha.kubernetes.io/critical-pod: ''
+            spec:
+              tolerations:
+              # Additions to the default tiller deployment for allowing to schedule tiller onto controller nodes
+              # so that helm can be used to install pods running only on controller nodes
+              - key: "node.alpha.kubernetes.io/role"
+                operator: "Equal"
+                value: "master"
+                effect: "NoSchedule"
+              - key: "CriticalAddonsOnly"
+                operator: "Exists"
+              containers:
+              - env:
+                - name: TILLER_NAMESPACE
+                  value: kube-system
+                image: gcr.io/kubernetes-helm/tiller:v2.5.0
+                imagePullPolicy: IfNotPresent
+                livenessProbe:
+                  httpGet:
+                    path: /liveness
+                    port: 44135
+                  initialDelaySeconds: 1
+                  timeoutSeconds: 1
+                name: tiller
+                ports:
+                - containerPort: 44134
+                  name: tiller
+                readinessProbe:
+                  httpGet:
+                    path: /readiness
+                    port: 44135
+                  initialDelaySeconds: 1
+                  timeoutSeconds: 1
+                resources: {}
+              nodeSelector:
+                beta.kubernetes.io/os: linux
+        status: {}
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          creationTimestamp: null
+          labels:
+            app: helm
+            name: tiller
+          name: tiller-deploy
+          namespace: kube-system
+        spec:
+          ports:
+          - name: tiller
+            port: 44134
+            targetPort: tiller
+          selector:
+            app: helm
+            name: tiller
+          type: ClusterIP
+        status:
+          loadBalancer: {}
 
 {{ if .AssetsConfig.HasTLSBootstrapToken }}
   - path: /etc/kubernetes/auth/kubelet-tls-bootstrap-token.tmp{{if .AssetsEncryptionEnabled}}.enc{{end}}
