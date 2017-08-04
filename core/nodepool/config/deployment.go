@@ -10,18 +10,18 @@ func (c DeploymentSettings) ValidateInputs() error {
 	// By design, kube-aws doesn't allow customizing the following settings among node pools.
 	//
 	// Every node pool imports subnets from the main stack and therefore there's no need for setting:
-	// * VPCID
-	// * InternetGatewayID
+	// * VPC.ID(FromStackOutput)
+	// * InternetGateway.ID(FromStackOutput)
 	// * RouteTableID
 	// * VPCCIDR
 	// * InstanceCIDR
 	// * MapPublicIPs
 	// * ElasticFileSystemID
-	if c.VPCID != "" {
-		return fmt.Errorf("although you can't customize `vpcId` per node pool but you did specify \"%s\" in your cluster.yaml", c.VPCID)
+	if c.VPC.HasIdentifier() {
+		return fmt.Errorf("although you can't customize VPC per node pool but you did specify \"%v\" in your cluster.yaml", c.VPC)
 	}
-	if c.InternetGatewayID != "" {
-		return fmt.Errorf("although you can't customize `internetGatewayId` per node pool but you did specify \"%s\" in your cluster.yaml", c.InternetGatewayID)
+	if c.InternetGateway.HasIdentifier() {
+		return fmt.Errorf("although you can't customize internet gateway per node pool but you did specify \"%v\" in your cluster.yaml", c.InternetGateway)
 	}
 	if c.RouteTableID != "" {
 		return fmt.Errorf("although you can't customize `routeTableId` per node pool but you did specify \"%s\" in your cluster.yaml", c.RouteTableID)
@@ -54,15 +54,15 @@ func (c DeploymentSettings) ValidateInputs() error {
 		return fmt.Errorf("although you can't customize `kmsKeyArn` per node pool but you did specify \"%s\" in your cluster.yaml", c.KMSKeyARN)
 	}
 
-	if err := c.Experimental.Valid(); err != nil {
+	if err := c.Experimental.Validate(); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (s DeploymentSettings) Valid() error {
-	if err := s.Experimental.Valid(); err != nil {
+func (s DeploymentSettings) Validate() error {
+	if err := s.Experimental.Validate(); err != nil {
 		return err
 	}
 	return nil
@@ -127,6 +127,12 @@ func (c DeploymentSettings) WithDefaultsFrom(main cfg.DeploymentSettings) Deploy
 
 	// Inherit main CloudWatchLogging config
 	c.CloudWatchLogging.MergeIfEmpty(main.CloudWatchLogging)
+
+	// Inherit main AmazonSsmAgent config
+	c.AmazonSsmAgent = main.AmazonSsmAgent
+
+	//Inherit main KubeDns config
+	c.KubeDns.MergeIfEmpty(main.KubeDns)
 
 	return c
 }
