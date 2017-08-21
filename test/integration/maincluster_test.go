@@ -119,16 +119,12 @@ func TestMainClusterConfig(t *testing.T) {
 			LoadBalancer: controlplane_config.LoadBalancer{
 				Enabled: false,
 			},
-			Dex: model.Dex{
-				Enabled:         false,
-				Url:             "https://dex.example.com",
-				ClientId:        "example-app",
-				Username:        "email",
-				Groups:          "groups",
-				SelfSignedCa:    true,
-				Connectors:      []model.Connector{},
-				StaticClients:   []model.StaticClient{},
-				StaticPasswords: []model.StaticPassword{},
+			Oidc: model.Oidc{
+				Enabled:       false,
+				IssuerUrl:     "https://accounts.google.com",
+				ClientId:      "kubernetes",
+				UsernameClaim: "email",
+				GroupsClaim:   "groups",
 			},
 			NodeDrainer: model.NodeDrainer{
 				Enabled:      false,
@@ -1167,32 +1163,12 @@ experimental:
       - arn:aws:elasticloadbalancing:eu-west-1:xxxxxxxxxxxx:targetgroup/manuallymanagedetg/xxxxxxxxxxxxxxxx
     securityGroupIds:
       - sg-12345678
-  dex:
+  oidc:
     enabled: true
-    url: "https://dex.example.com"
-    clientId: "example-app"
-    username: "email"
-    groups: "groups"
-    SelfSignedCa: true
-    connectors:
-    - type: github
-      id: github
-      name: GitHub
-      config:
-        clientId: "your_client_id"
-        clientSecret: "your_client_secret"
-        redirectURI: https://dex.example.com/callback
-        org: your_organization
-    staticClients:
-    - id: 'example-app'
-      redirectURIs: 'http://127.0.0.1:5555/callback'
-      name: 'Example App'
-      secret: 'ZXhhbXBsZS1hcHAtc2VjcmV0'
-    staticPasswords:
-    - email: 'admin@example.com'
-      hash: '$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W'
-      username: 'admin'
-      userID: '08a8684b-db88-4b73-90a9-3cd1661f5466'
+    oidc-issuer-url: "https://accounts.google.com"
+    oidc-client-id: "kubernetes"
+    oidc-username-claim: "email"
+    oidc-groups-claim: "groups"
   nodeDrainer:
     enabled: true
     drainTimeout: 3
@@ -1266,22 +1242,12 @@ worker:
 							Arns:             []string{"arn:aws:elasticloadbalancing:eu-west-1:xxxxxxxxxxxx:targetgroup/manuallymanagedetg/xxxxxxxxxxxxxxxx"},
 							SecurityGroupIds: []string{"sg-12345678"},
 						},
-						Dex: model.Dex{
-							Enabled:      true,
-							Url:          "https://dex.example.com",
-							ClientId:     "example-app",
-							Username:     "email",
-							Groups:       "groups",
-							SelfSignedCa: true,
-							Connectors: []model.Connector{
-								{Type: "github", Id: "github", Name: "GitHub", Config: map[string]string{"clientId": "your_client_id", "clientSecret": "your_client_secret", "redirectURI": "https://dex.example.com/callback", "org": "your_organization"}},
-							},
-							StaticClients: []model.StaticClient{
-								{Id: "example-app", RedirectURIs: "http://127.0.0.1:5555/callback", Name: "Example App", Secret: "ZXhhbXBsZS1hcHAtc2VjcmV0"},
-							},
-							StaticPasswords: []model.StaticPassword{
-								{Email: "admin@example.com", Hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W", Username: "admin", UserId: "08a8684b-db88-4b73-90a9-3cd1661f5466"},
-							},
+						Oidc: model.Oidc{
+							Enabled:       true,
+							IssuerUrl:     "https://accounts.google.com",
+							ClientId:      "kubernetes",
+							UsernameClaim: "email",
+							GroupsClaim:   "groups",
 						},
 						NodeDrainer: model.NodeDrainer{
 							Enabled:      true,
@@ -3052,7 +3018,7 @@ worker:
   - name: pool1
     iam:
       role:
-        managedPolicies: 
+        managedPolicies:
          - arn: "arn:aws:iam::aws:policy/AdministratorAccess"
          - arn: "arn:aws:iam::000000000000:policy/myManagedPolicy"
 `,
@@ -4244,9 +4210,9 @@ addons:
 controller:
   iam:
     role:
-      name: foobarba
+      name: foobarba-foobarba-foobarba-foobarba-foobarba-foobarba
 `,
-			expectedErrorMessage: "IAM role name(=kubeaws-it-main-Controlplane-PRK1CVQNY7XZ-ap-northeast-1-foobarba) will be 65 characters long. It exceeds the AWS limit of 64 characters: cluster name(=kubeaws-it-main) + nested stack name(=Controlplane) + managed iam role name(=foobarba) should be less than or equal to 34",
+			expectedErrorMessage: "IAM role name(=ap-northeast-1-foobarba-foobarba-foobarba-foobarba-foobarba-foobarba) will be 68 characters long. It exceeds the AWS limit of 64 characters: region name(=ap-northeast-1) + managed iam role name(=foobarba-foobarba-foobarba-foobarba-foobarba-foobarba) should be less than or equal to 49",
 		},
 		{
 			context: "WithTooLongWorkerIAMRoleName",
@@ -4256,9 +4222,9 @@ worker:
   - name: pool1
     iam:
       role:
-        name: foobarbazbaraaa
+        name: foobarba-foobarba-foobarba-foobarba-foobarba-foobarbazzz
 `,
-			expectedErrorMessage: "IAM role name(=kubeaws-it-main-Pool1-PRK1CVQNY7XZ-ap-northeast-1-foobarbazbaraaa) will be 65 characters long. It exceeds the AWS limit of 64 characters: cluster name(=kubeaws-it-main) + nested stack name(=Pool1) + managed iam role name(=foobarbazbaraaa) should be less than or equal to 34",
+			expectedErrorMessage: "IAM role name(=ap-northeast-1-foobarba-foobarba-foobarba-foobarba-foobarba-foobarbazzz) will be 71 characters long. It exceeds the AWS limit of 64 characters: region name(=ap-northeast-1) + managed iam role name(=foobarba-foobarba-foobarba-foobarba-foobarba-foobarbazzz) should be less than or equal to 49",
 		},
 		{
 			context: "WithInvalidEtcdInstanceProfileArn",

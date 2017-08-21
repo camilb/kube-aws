@@ -613,7 +613,7 @@ worker:
 #      arn: "arn:aws:iam::YOURACCOUNTID:instance-profile/INSTANCEPROFILENAME"
 #
 #  # The version of etcd to be used. Set to e.g. "3.2.1" to use etcd3
-#  version: 3.2.1
+#  version: 3.2.5
 #
 #  snapshot:
 #    # Set to true to periodically take an etcd snapshot
@@ -920,7 +920,7 @@ worker:
 # and pulling from quay or dockerhub is slow and you get many timeouts.
 
 # Version of hyperkube image to use. This is the tag for the hyperkube image repository.
-# kubernetesVersion: v1.7.2_coreos.0
+# kubernetesVersion: v1.7.3_coreos.0
 
 # Hyperkube image repository to use.
 # hyperkubeImage:
@@ -1008,7 +1008,7 @@ worker:
 # Kube Dashboard image repository to use.
 #kubeDashboardImage:
 #  repo: gcr.io/google_containers/kubernetes-dashboard-amd64
-#  tag: v1.6.1
+#  tag: v1.6.3
 #  rktPullDocker: false
 
 # Calico Controller image repository to use.
@@ -1174,42 +1174,15 @@ addons:
 #     enabled: true
 #     # Maximum time to wait, in minutes, for the node to be completely drained. Must be an integer between 1 and 60.
 #     drainTimeout: 5
-#   # Enable dex  integration - https://github.com/coreos/dex
 #   # Configure OpenID Connect token authenticator plugin in Kubernetes API server.
-#   # Notice: always use "https" for the "url", otherwise the Kubernetes API server will not start correctly.
-#   # Please set selfSignedCa to false if you plan to expose dex service using a LoadBalancer or Ingress with certificates signed by a trusted CA.
-#   dex:
+#   # For using Dex as a custom OIDC provider, please check "contrib/dex/README.md".
+#   # WARNING: always use "https" for "issuerUrl", otherwise the Kubernetes API server will not start correctly.
+#   oidc:
 #     enabled: true
-#     url: "https://dex.example.com"
-#     clientId: "example-app"
-#     username: "email"
-#     groups: "groups"
-#     selfSignedCa: true
-#
-#   # Dex connectors configuration. You can add configuration for the desired connectors suported by dex or
-#   # skip this part if you don't plan to use any of them. Here is an example of GitHub connector.
-#     connectors:
-#     - type: github
-#       id: github
-#       name: GitHub
-#       config:
-#         clientId: "your_client_id"
-#         clientSecret: "your_client_secret"
-#         redirectURI: https://dex.example.com/callback
-#         org: your_organization
-#   # Configure static clients and users
-#     staticClients:
-#     - id: 'example-app'
-#       redirectURIs: 'http://127.0.0.1:5555/callback'
-#       name: 'Example App'
-#       secret: 'ZXhhbXBsZS1hcHAtc2VjcmV0'
-#
-#     staticPasswords:
-#     - email: "admin@example.com"
-#       # bcrypt hash of the string "password". You can use bcrypt-tool from CoreOS to generate the passwords.
-#       hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
-#       username: "admin"
-#       userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
+#     issuerUrl: "https://accounts.google.com"
+#     clientId: "kubernetes"
+#     usernameClaim: "email"
+#     groupsClaim: "groups"
 #
 #   plugins:
 #     rbac:

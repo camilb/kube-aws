@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	k8sVer = "v1.7.2_coreos.0"
+	k8sVer = "v1.7.3_coreos.0"
 
 	credentialsDir = "credentials"
 	userDataDir    = "userdata"
@@ -89,16 +89,12 @@ func NewDefaultCluster() *Cluster {
 				Enabled: false,
 			},
 		},
-		Dex: model.Dex{
-			Enabled:         false,
-			Url:             "https://dex.example.com",
-			ClientId:        "example-app",
-			Username:        "email",
-			Groups:          "groups",
-			SelfSignedCa:    true,
-			Connectors:      []model.Connector{},
-			StaticClients:   []model.StaticClient{},
-			StaticPasswords: []model.StaticPassword{},
+		Oidc: model.Oidc{
+			Enabled:       false,
+			IssuerUrl:     "https://accounts.google.com",
+			ClientId:      "kubernetes",
+			UsernameClaim: "email",
+			GroupsClaim:   "groups",
 		},
 	}
 
@@ -134,10 +130,10 @@ func NewDefaultCluster() *Cluster {
 			CloudFormationStreaming:            true,
 			HyperkubeImage:                     model.Image{Repo: "quay.io/coreos/hyperkube", Tag: k8sVer, RktPullDocker: false},
 			AWSCliImage:                        model.Image{Repo: "quay.io/coreos/awscli", Tag: "master", RktPullDocker: false},
-			CalicoNodeImage:                    model.Image{Repo: "quay.io/calico/node", Tag: "v1.2.1", RktPullDocker: false},
-			CalicoCniImage:                     model.Image{Repo: "quay.io/calico/cni", Tag: "v1.8.3", RktPullDocker: false},
-			CalicoPolicyControllerImage:        model.Image{Repo: "quay.io/calico/kube-policy-controller", Tag: "v0.6.0", RktPullDocker: false},
-			CalicoCtlImage:                     model.Image{Repo: "quay.io/calico/ctl", Tag: "v1.2.1", RktPullDocker: false},
+			CalicoNodeImage:                    model.Image{Repo: "quay.io/calico/node", Tag: "v2.4.1", RktPullDocker: false},
+			CalicoCniImage:                     model.Image{Repo: "quay.io/calico/cni", Tag: "v1.10.0", RktPullDocker: false},
+			CalicoPolicyControllerImage:        model.Image{Repo: "quay.io/calico/kube-policy-controller", Tag: "v0.7.0", RktPullDocker: false},
+			CalicoCtlImage:                     model.Image{Repo: "quay.io/calico/ctl", Tag: "v1.4.0", RktPullDocker: false},
 			ClusterAutoscalerImage:             model.Image{Repo: "gcr.io/google_containers/cluster-autoscaler", Tag: "v0.6.0", RktPullDocker: false},
 			ClusterProportionalAutoscalerImage: model.Image{Repo: "gcr.io/google_containers/cluster-proportional-autoscaler-amd64", Tag: "1.1.2", RktPullDocker: false},
 			KubeDnsImage:                       model.Image{Repo: "gcr.io/google_containers/k8s-dns-kube-dns-amd64", Tag: "1.14.4", RktPullDocker: false},
@@ -147,10 +143,9 @@ func NewDefaultCluster() *Cluster {
 			ExecHealthzImage:                   model.Image{Repo: "gcr.io/google_containers/exechealthz-amd64", Tag: "1.2", RktPullDocker: false},
 			HeapsterImage:                      model.Image{Repo: "gcr.io/google_containers/heapster", Tag: "v1.4.0", RktPullDocker: false},
 			AddonResizerImage:                  model.Image{Repo: "gcr.io/google_containers/addon-resizer", Tag: "2.0", RktPullDocker: false},
-			KubeDashboardImage:                 model.Image{Repo: "gcr.io/google_containers/kubernetes-dashboard-amd64", Tag: "v1.6.1", RktPullDocker: false},
+			KubeDashboardImage:                 model.Image{Repo: "gcr.io/google_containers/kubernetes-dashboard-amd64", Tag: "v1.6.3", RktPullDocker: false},
 			PauseImage:                         model.Image{Repo: "gcr.io/google_containers/pause-amd64", Tag: "3.0", RktPullDocker: false},
 			FlannelImage:                       model.Image{Repo: "quay.io/coreos/flannel", Tag: "v0.7.1", RktPullDocker: false},
-			DexImage:                           model.Image{Repo: "quay.io/coreos/dex", Tag: "v2.4.1", RktPullDocker: false},
 			JournaldCloudWatchLogsImage:        model.Image{Repo: "jollinshead/journald-cloudwatch-logs", Tag: "0.1", RktPullDocker: true},
 		},
 		KubeClusterSettings: KubeClusterSettings{
@@ -460,7 +455,6 @@ type DeploymentSettings struct {
 	KubeDashboardImage                 model.Image `yaml:"kubeDashboardImage,omitempty"`
 	PauseImage                         model.Image `yaml:"pauseImage,omitempty"`
 	FlannelImage                       model.Image `yaml:"flannelImage,omitempty"`
-	DexImage                           model.Image `yaml:"dexImage,omitempty"`
 	JournaldCloudWatchLogsImage        model.Image `yaml:"journaldCloudWatchLogsImage,omitempty"`
 }
 
@@ -531,7 +525,7 @@ type Experimental struct {
 	TargetGroup                 TargetGroup                    `yaml:"targetGroup"`
 	NodeDrainer                 model.NodeDrainer              `yaml:"nodeDrainer"`
 	Plugins                     Plugins                        `yaml:"plugins"`
-	Dex                         model.Dex                      `yaml:"dex"`
+	Oidc                        model.Oidc                     `yaml:"oidc"`
 	DisableSecurityGroupIngress bool                           `yaml:"disableSecurityGroupIngress"`
 	NodeMonitorGracePeriod      string                         `yaml:"nodeMonitorGracePeriod"`
 	model.UnknownKeys           `yaml:",inline"`
@@ -1039,8 +1033,14 @@ func (c Cluster) validate() error {
 		fmt.Println(`WARNING: instance types "t2.nano" and "t2.micro" are not recommended. See https://github.com/kubernetes-incubator/kube-aws/issues/258 for more information`)
 	}
 
-	if e := cfnresource.ValidateRoleNameLength(c.ClusterName, c.NestedStackName(), c.Controller.IAMConfig.Role.Name, c.Region.String()); e != nil {
-		return e
+	if len(c.Controller.IAMConfig.Role.Name) > 0 {
+		if e := cfnresource.ValidateStableRoleNameLength(c.Controller.IAMConfig.Role.Name, c.Region.String()); e != nil {
+			return e
+		}
+	} else {
+		if e := cfnresource.ValidateUnstableRoleNameLength(c.ClusterName, c.NestedStackName(), c.Controller.IAMConfig.Role.Name, c.Region.String()); e != nil {
+			return e
+		}
 	}
 
 	return nil
