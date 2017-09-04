@@ -22,7 +22,7 @@ coreos:
     reboot-strategy: "off"
   flannel:
     interface: $private_ipv4
-    etcd_cafile: /etc/kubernetes/ssl/ca.pem
+    etcd_cafile: /etc/kubernetes/ssl/etcd-trusted-ca.pem
     etcd_certfile: /etc/kubernetes/ssl/etcd-client.pem
     etcd_keyfile: /etc/kubernetes/ssl/etcd-client-key.pem
 
@@ -167,7 +167,7 @@ coreos:
             ExecStartPre=/opt/bin/decrypt-assets
             {{- end}}
             ExecStartPre=/usr/bin/etcdctl \
-            --ca-file=/etc/kubernetes/ssl/ca.pem \
+            --ca-file=/etc/kubernetes/ssl/etcd-trusted-ca.pem \
             --cert-file=/etc/kubernetes/ssl/etcd-client.pem \
             --key-file=/etc/kubernetes/ssl/etcd-client-key.pem \
             --endpoints="${ETCD_ENDPOINTS}" \
@@ -211,7 +211,7 @@ coreos:
         Environment=KUBELET_IMAGE_TAG={{.K8sVer}}
         Environment=KUBELET_IMAGE_URL={{ .HyperkubeImage.RktRepoWithoutTag }}
         Environment="RKT_RUN_ARGS=--volume dns,kind=host,source=/etc/resolv.conf {{.HyperkubeImage.Options}}\
-        --set-env=ETCD_CA_CERT_FILE=/etc/kubernetes/ssl/ca.pem \
+        --set-env=ETCD_CA_CERT_FILE=/etc/kubernetes/ssl/etcd-trusted-ca.pem \
         --set-env=ETCD_CERT_FILE=/etc/kubernetes/ssl/etcd-client.pem \
         --set-env=ETCD_KEY_FILE=/etc/kubernetes/ssl/etcd-client-key.pem \
         --mount volume=dns,target=/etc/resolv.conf \
@@ -237,7 +237,7 @@ coreos:
         ExecStartPre=/usr/bin/mkdir -p /var/log/containers
         ExecStartPre=/usr/bin/mkdir -p /opt/cni/bin
         ExecStartPre=/usr/bin/etcdctl \
-                       --ca-file /etc/kubernetes/ssl/ca.pem \
+                       --ca-file /etc/kubernetes/ssl/etcd-trusted-ca.pem \
                        --key-file /etc/kubernetes/ssl/etcd-client-key.pem \
                        --cert-file /etc/kubernetes/ssl/etcd-client.pem \
                        --endpoints "${ETCD_ENDPOINTS}" \
@@ -312,16 +312,27 @@ coreos:
         Wants=kubelet.service docker.service
 
         [Service]
-        Type=simple
+        Type=oneshot
         StartLimitInterval=0
-        RestartSec=10
-        Restart=on-failure
         RemainAfterExit=true
-        ExecStartPre=/usr/bin/systemctl is-active kubelet.service
-        ExecStartPre=/usr/bin/systemctl is-active docker.service
-        ExecStartPre=/usr/bin/curl -s -f http://127.0.0.1:8080/version
-        ExecStartPre=/opt/bin/install-kube-system
-        ExecStart=/bin/true
+        ExecStartPre=/usr/bin/bash -c "until /usr/bin/systemctl is-active kubelet.service; do echo waiting until kubelet starts; sleep 10; done"
+        ExecStartPre=/usr/bin/bash -c "until /usr/bin/systemctl is-active docker.service; do echo waiting until docker starts; sleep 10; done"
+        ExecStartPre=/usr/bin/bash -c "until /usr/bin/curl -s -f http://127.0.0.1:8080/version; do echo waiting until apiserver starts; sleep 10; done"
+        ExecStart=/opt/bin/retry 3 /opt/bin/install-kube-system
+
+    - name: apply-kube-aws-plugins.service
+      command: start
+      runtime: true
+      content: |
+        [Unit]
+        Requires=install-kube-system.service
+        After=install-kube-system.service
+
+        [Service]
+        Type=oneshot
+        StartLimitInterval=0
+        RemainAfterExit=true
+        ExecStart=/opt/bin/retry 3 /opt/bin/apply-kube-aws-plugins
 
 {{ if $.ElasticFileSystemID }}
     - name: rpc-statd.service
@@ -347,16 +358,17 @@ coreos:
       command: start
       content: |
         [Unit]
-        Wants=kubelet.service docker.service install-kube-system.service
-        After=kubelet.service install-kube-system.service
+        Wants=kubelet.service docker.service install-kube-system.service apply-kube-aws-plugins.service
+        After=kubelet.service install-kube-system.service apply-kube-aws-plugins.service
 
         [Service]
         Type=simple
         Restart=on-failure
         RestartSec=60
-        StartLimitInterval=320
-        StartLimitBurst=5
+        StartLimitInterval=640
+        StartLimitBurst=10
         ExecStartPre=/usr/bin/systemctl is-active install-kube-system.service
+        ExecStartPre=/usr/bin/systemctl is-active apply-kube-aws-plugins.service
         ExecStartPre=/usr/bin/bash -c "while sleep 1; do if /usr/bin/curl -s -m 20 -f  http://127.0.0.1:8080/healthz > /dev/null &&  /usr/bin/curl -s -m 20 -f  http://127.0.0.1:10252/healthz > /dev/null && /usr/bin/curl -s -m 20 -f  http://127.0.0.1:10251/healthz > /dev/null &&  /usr/bin/curl --insecure -s -m 20 -f  https://127.0.0.1:10250/healthz > /dev/null ; then break ; fi;  done"
         {{ if .UseCalico }}
         ExecStartPre=/usr/bin/bash -c "until /usr/bin/docker run --net=host --pid=host --rm {{ .CalicoCtlImage.RepoWithTag }} node status > /dev/null; do sleep 3; done && echo Calico running"
@@ -371,6 +383,7 @@ coreos:
       content: |
         [Unit]
         Description=Label this kubernetes node with additional AWS parameters
+        Wants=kubelet.service
         After=kubelet.service
         Before=cfn-signal.service
 
@@ -391,7 +404,9 @@ coreos:
           aws autoscaling describe-auto-scaling-groups \
           --auto-scaling-group-name $AUTOSCALINGGROUP --region {{.Region}} \
           --query 'AutoScalingGroups[].LaunchConfigurationName' --output text)\""
+        ExecStartPre=/usr/bin/bash -c "until /usr/bin/curl -s -f http://127.0.0.1:8080/version; do echo waiting until apiserver starts; sleep 1; done"
         ExecStart=/bin/sh -c "/usr/bin/curl \
+          --retry 3 \
           --request PATCH \
           -H 'Content-Type: application/strategic-merge-patch+json' \
           -d'{ \
@@ -536,6 +551,43 @@ write_files:
       [global]
       DisableSecurityGroupIngress = true
 {{end}}
+
+  - path: /opt/bin/apply-kube-aws-plugins
+    permissions: 0700
+    owner: root:root
+    content: |
+      #!/bin/bash -vxe
+
+      kubectl() {
+          /usr/bin/docker run --rm --net=host \
+            -v /etc/resolv.conf:/etc/resolv.conf \
+            -v {{.KubernetesManifestPlugin.Directory}}:{{.KubernetesManifestPlugin.Directory}} \
+            {{.HyperkubeImage.RepoWithTag}} /hyperkube kubectl "$@"
+      }
+
+      helm() {
+          /usr/bin/docker run --rm --net=host \
+            -v /etc/resolv.conf:/etc/resolv.conf \
+            -v {{.HelmReleasePlugin.Directory}}:{{.HelmReleasePlugin.Directory}} \
+            {{.HelmImage.RepoWithTag}} helm "$@"
+      }
+
+      while read m || [[ -n $m ]]; do
+        kubectl apply -f $m
+      done <{{.KubernetesManifestPlugin.ManifestListFile.Path}}
+
+      while read r || [[ -n $r ]]; do
+        release_name=$(jq .name $r)
+        chart_name=$(jq .chart.name $r)
+        chart_version=$(jq .chart.version $r)
+        values_file=$(jq .values.file $r)
+        if helm status $release_name; then
+          helm upgrade $release_name $chart_name --version $chart_version -f $values_file
+        else
+          helm install $release_name $chart_name --version $chart_version -f $values_file
+        fi
+      done <{{.HelmReleasePlugin.ReleaseListFile.Path}}
+
 {{if .Experimental.AwsEnvironment.Enabled}}
   - path: /opt/bin/set-aws-environment
     owner: root:root
@@ -718,7 +770,6 @@ write_files:
       kubectl apply -f "${mfdir}/kube-rescheduler-de.yaml"
       {{- end }}
 
-      {{if .Experimental.Plugins.Rbac.Enabled}}
       mfdir=/srv/kubernetes/rbac
 
       # Cluster roles and bindings
@@ -746,13 +797,10 @@ write_files:
           kubectl apply -f "${mfdir}/cluster-role-bindings/$manifest.yaml"
       done
       {{ end }}
-      {{ end }}
 
       {{if .Experimental.Kube2IamSupport.Enabled }}
         mfdir=/srv/kubernetes/manifests
-       {{if .Experimental.Plugins.Rbac.Enabled}}
         kubectl apply -f "${mfdir}/kube2iam-rbac.yaml"
-       {{end}}
         kubectl apply -f "${mfdir}/kube2iam-ds.yaml";
       {{ end }}
 
@@ -992,7 +1040,7 @@ write_files:
     content: |
       #!/bin/bash -e
 
-      etcd_ca=$(cat /etc/kubernetes/ssl/ca.pem | base64 | tr -d '\n')
+      etcd_ca=$(cat /etc/kubernetes/ssl/etcd-trusted-ca.pem | base64 | tr -d '\n')
       etcd_key=$(cat /etc/kubernetes/ssl/etcd-client-key.pem | base64 | tr -d '\n')
       etcd_cert=$(cat /etc/kubernetes/ssl/etcd-client.pem | base64 | tr -d '\n')
 
@@ -1363,7 +1411,6 @@ write_files:
                       optional: true
 {{end}}
 
-{{if .Experimental.Plugins.Rbac.Enabled }}
   # TODO: remove the following binding once the TLS Bootstrapping feature is enabled by default, see:
   # https://github.com/kubernetes-incubator/kube-aws/pull/618#discussion_r115162048
   # https://kubernetes.io/docs/admin/authorization/rbac/#core-component-roles
@@ -1398,6 +1445,7 @@ write_files:
             - daemonsets
             verbs:
             - get
+          # Can be removed if node authorizer is enabled
           - apiGroups: [""]
             resources:
             - nodes
@@ -1629,7 +1677,6 @@ write_files:
           name: kube-aws:node-bootstrapper
           apiGroup: rbac.authorization.k8s.io
 {{ end }}
-{{ end }}
 
   - path: /etc/kubernetes/manifests/kube-proxy.yaml
     content: |
@@ -1689,7 +1736,7 @@ write_files:
           - --apiserver-count={{if .MinControllerCount}}{{ .MinControllerCount }}{{else}}{{ .ControllerCount }}{{end}}
           - --bind-address=0.0.0.0
           - --etcd-servers=#ETCD_ENDPOINTS#
-          - --etcd-cafile=/etc/kubernetes/ssl/ca.pem
+          - --etcd-cafile=/etc/kubernetes/ssl/etcd-trusted-ca.pem
           - --etcd-certfile=/etc/kubernetes/ssl/etcd-client.pem
           - --etcd-keyfile=/etc/kubernetes/ssl/etcd-client-key.pem
           - --allow-privileged=true
@@ -1709,16 +1756,13 @@ write_files:
           - --audit-log-path={{.Experimental.AuditLog.LogPath}}
           - --audit-log-maxbackup=1
           {{ end }}
-          {{if .Experimental.Plugins.Rbac.Enabled}}
-          - --authorization-mode=RBAC
-          - --authorization-rbac-super-user=kube-admin
-          {{ end }}
+          - --authorization-mode={{if .Experimental.NodeAuthorizer.Enabled}}Node,{{end}}RBAC
           {{if .Experimental.Authentication.Webhook.Enabled}}
           - --authentication-token-webhook-config-file=/etc/kubernetes/webhooks/authentication.yaml
           - --authentication-token-webhook-cache-ttl={{ .Experimental.Authentication.Webhook.CacheTTL }}
           {{ end }}
           - --advertise-address=$private_ipv4
-          - --admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass{{if .Experimental.Admission.PodSecurityPolicy.Enabled}},PodSecurityPolicy{{ end }},ResourceQuota,{{if .Experimental.Admission.DenyEscalatingExec.Enabled}}DenyEscalatingExec{{end}}
+          - --admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass{{if .Experimental.Admission.PodSecurityPolicy.Enabled}},PodSecurityPolicy{{ end }}{{if .Experimental.NodeAuthorizer.Enabled}},NodeRestriction{{end}},ResourceQuota,{{if .Experimental.Admission.DenyEscalatingExec.Enabled}}DenyEscalatingExec{{end}}
           - --anonymous-auth=false
           {{if .Experimental.Oidc.Enabled}}
           - --oidc-issuer-url={{.Experimental.Oidc.IssuerUrl}}
@@ -1735,8 +1779,11 @@ write_files:
           - --tls-private-key-file=/etc/kubernetes/ssl/apiserver-key.pem
           - --client-ca-file=/etc/kubernetes/ssl/ca.pem
           - --service-account-key-file=/etc/kubernetes/ssl/apiserver-key.pem
-          - --runtime-config=extensions/v1beta1/networkpolicies=true,batch/v2alpha1{{if .Experimental.Plugins.Rbac.Enabled}},rbac.authorization.k8s.io/v1beta1=true{{ end }}{{if .Experimental.Admission.PodSecurityPolicy.Enabled}},extensions/v1beta1/podsecuritypolicy=true{{ end }}
+          - --runtime-config=extensions/v1beta1/networkpolicies=true,batch/v2alpha1,rbac.authorization.k8s.io/v1beta1=true{{if .Experimental.Admission.PodSecurityPolicy.Enabled}},extensions/v1beta1/podsecuritypolicy=true{{ end }}
           - --cloud-provider=aws
+          {{range $f := .APIServerFlags}}
+          - --{{$f.Name}}={{$f.Value}}
+          {{ end -}}
           livenessProbe:
             httpGet:
               host: 127.0.0.1
@@ -1773,6 +1820,11 @@ write_files:
             name: var-log
             readOnly: false
           {{end}}
+          {{range $v := .APIServerVolumes}}
+          - mountPath: {{quote $v.Path}}
+            name: {{quote $v.Name}}
+            readOnly: {{$v.ReadOnly}}
+          {{end}}
         volumes:
         - hostPath:
             path: /etc/kubernetes/ssl
@@ -1794,6 +1846,11 @@ write_files:
         - hostPath:
             path: /var/log
           name: var-log
+        {{end}}
+        {{range $v := .APIServerVolumes}}
+        - hostPath:
+            path: {{quote $v.Path}}
+          name: {{quote $v.Name}}
         {{end}}
 
   - path: /etc/kubernetes/manifests/kube-controller-manager.yaml
@@ -1817,8 +1874,8 @@ write_files:
           - --service-account-private-key-file=/etc/kubernetes/ssl/apiserver-key.pem
           {{ if .Experimental.TLSBootstrap.Enabled }}
           - --insecure-experimental-approve-all-kubelet-csrs-for-group=system:kubelet-bootstrap
-          - --cluster-signing-cert-file=/etc/kubernetes/ssl/ca.pem
-          - --cluster-signing-key-file=/etc/kubernetes/ssl/ca-key.pem
+          - --cluster-signing-cert-file=/etc/kubernetes/ssl/worker-ca.pem
+          - --cluster-signing-key-file=/etc/kubernetes/ssl/worker-ca-key.pem
           {{ end }}
           - --root-ca-file=/etc/kubernetes/ssl/ca.pem
           - --cloud-provider=aws
@@ -2274,18 +2331,18 @@ write_files:
           labels:
             k8s-app: heapster
             kubernetes.io/cluster-service: "true"
-            version: v1.4.0
+            version: v1.4.1
         spec:
           replicas: 1
           selector:
             matchLabels:
               k8s-app: heapster
-              version: v1.4.0
+              version: v1.4.1
           template:
             metadata:
               labels:
                 k8s-app: heapster
-                version: v1.4.0
+                version: v1.4.1
               annotations:
                 scheduler.alpha.kubernetes.io/critical-pod: ''
             spec:
@@ -2521,7 +2578,7 @@ write_files:
               - env:
                 - name: TILLER_NAMESPACE
                   value: kube-system
-                image: gcr.io/kubernetes-helm/tiller:v2.5.1
+                image: {{.TillerImage.RepoWithTag}}
                 imagePullPolicy: IfNotPresent
                 livenessProbe:
                   httpGet:
@@ -2565,6 +2622,33 @@ write_files:
         status:
           loadBalancer: {}
 
+  - path: {{.KubernetesManifestPlugin.ManifestListFile.Path}}
+    encoding: gzip+base64
+    content: {{.KubernetesManifestPlugin.ManifestListFile.Content.ToGzip.ToBase64}}
+
+{{ range $m := .KubernetesManifestPlugin.Manifests }}
+{{ $f := $m.ManifestFile }}
+  - path: {{$f.Path}}
+    encoding: gzip+base64
+    content: {{$f.Content.ToGzip.ToBase64}}
+{{ end }}
+
+  - path: {{.HelmReleasePlugin.ReleaseListFile.Path}}
+    encoding: gzip+base64
+    content: {{.HelmReleasePlugin.ReleaseListFile.Content.ToGzip.ToBase64}}
+
+
+{{ range $r := .HelmReleasePlugin.Releases }}
+{{ $f := $r.ReleaseFile }}
+  - path: {{$f.Path}}
+    encoding: gzip+base64
+    content: {{$f.Content.ToGzip.ToBase64}}
+{{ $f := $r.ValuesFile }}
+  - path: {{$f.Path}}
+    encoding: gzip+base64
+    content: {{$f.Content.ToGzip.ToBase64}}
+{{ end }}
+
 {{ if .AssetsConfig.HasTLSBootstrapToken }}
   - path: /etc/kubernetes/auth/kubelet-tls-bootstrap-token.tmp{{if .AssetsEncryptionEnabled}}.enc{{end}}
     encoding: gzip+base64
@@ -2578,17 +2662,17 @@ write_files:
 {{ end }}
 
 {{ if .ManageCertificates }}
-  - path: /etc/kubernetes/ssl/ca.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
+  - path: /etc/kubernetes/ssl/ca.pem
     encoding: gzip+base64
     content: {{.AssetsConfig.CACert}}
 
 {{ if .Experimental.TLSBootstrap.Enabled }}
-  - path: /etc/kubernetes/ssl/ca-key.pem.enc
+  - path: /etc/kubernetes/ssl/worker-ca-key.pem.enc
     encoding: gzip+base64
-    content: {{.AssetsConfig.CAKey}}
+    content: {{.AssetsConfig.WorkerCAKey}}
 {{ end }}
 
-  - path: /etc/kubernetes/ssl/apiserver.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
+  - path: /etc/kubernetes/ssl/apiserver.pem
     encoding: gzip+base64
     content: {{.AssetsConfig.APIServerCert}}
 
@@ -2596,7 +2680,7 @@ write_files:
     encoding: gzip+base64
     content: {{.AssetsConfig.APIServerKey}}
 
-  - path: /etc/kubernetes/ssl/etcd-client.pem{{if .AssetsEncryptionEnabled}}.enc{{end}}
+  - path: /etc/kubernetes/ssl/etcd-client.pem
     encoding: gzip+base64
     content: {{.AssetsConfig.EtcdClientCert}}
 
@@ -2604,6 +2688,9 @@ write_files:
     encoding: gzip+base64
     content: {{.AssetsConfig.EtcdClientKey}}
 
+  - path: /etc/kubernetes/ssl/etcd-trusted-ca.pem
+    encoding: gzip+base64
+    content: {{.AssetsConfig.EtcdTrustedCA}}
 {{ end }}
 
   - path: /etc/kubernetes/controller-kubeconfig.yaml
@@ -2646,7 +2733,7 @@ write_files:
           "etcd_endpoints": "#ETCD_ENDPOINTS#",
           "etcd_key_file": "/etc/kubernetes/ssl/etcd-client-key.pem",
           "etcd_cert_file": "/etc/kubernetes/ssl/etcd-client.pem",
-          "etcd_ca_cert_file": "/etc/kubernetes/ssl/ca.pem",
+          "etcd_ca_cert_file": "/etc/kubernetes/ssl/etcd-trusted-ca.pem",
           "log_level": "info",
           "policy": {
             "type": "k8s",
@@ -2700,12 +2787,17 @@ write_files:
             labels:
               name: kube2iam
           spec:
-            {{- if .Experimental.Plugins.Rbac.Enabled}}
             serviceAccountName: kube2iam
-            {{- end}}
             hostNetwork: true
+            tolerations:
+            - operator: Exists
+              effect: NoSchedule
+            - operator: Exists
+              effect: NoExecute
+            - operator: Exists
+              key: CriticalAddonsOnly
             containers:
-              - image: jtblin/kube2iam:latest
+              - image: {{.Kube2IAMImage.RepoWithTag}}
                 name: kube2iam
                 args:
                   - "--app-port=8282"
@@ -2736,7 +2828,6 @@ write_files:
                     memory: 32Mi
                 securityContext:
                   privileged: true
-  {{if .Experimental.Plugins.Rbac.Enabled}}
   - path: /srv/kubernetes/manifests/kube2iam-rbac.yaml
     content: |
       apiVersion: v1
@@ -2778,6 +2869,29 @@ write_files:
       - kind: ServiceAccount
         name: kube2iam
         namespace: kube-system
-  {{end}}
 {{end}}
+
+  - path: /opt/bin/retry
+    owner: root:root
+    permissions: 0755
+    content: |
+      #!/bin/bash
+      max_attempts="$1"; shift
+      cmd="$@"
+      attempt_num=1
+      attempt_interval_sec=3
+
+      until $cmd
+      do
+          if (( attempt_num == max_attempts ))
+          then
+              echo "Attempt $attempt_num failed and there are no more attempts left!"
+              return 1
+          else
+              echo "Attempt $attempt_num failed! Trying again in $attempt_interval_sec seconds..."
+              ((attempt_num++))
+              sleep $attempt_interval_sec;
+          fi
+      done
+
 {{ end }}

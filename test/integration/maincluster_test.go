@@ -12,6 +12,7 @@ import (
 	"github.com/kubernetes-incubator/kube-aws/core/root"
 	"github.com/kubernetes-incubator/kube-aws/core/root/config"
 	"github.com/kubernetes-incubator/kube-aws/model"
+	"github.com/kubernetes-incubator/kube-aws/plugin/pluginmodel"
 	"github.com/kubernetes-incubator/kube-aws/test/helper"
 )
 
@@ -103,7 +104,7 @@ func TestMainClusterConfig(t *testing.T) {
 				Enabled: false,
 			},
 			ClusterAutoscalerSupport: model.ClusterAutoscalerSupport{
-				Enabled: false,
+				Enabled: true,
 			},
 			TLSBootstrap: controlplane_config.TLSBootstrap{
 				Enabled: false,
@@ -130,6 +131,7 @@ func TestMainClusterConfig(t *testing.T) {
 				Enabled:      false,
 				DrainTimeout: 5,
 			},
+			Plugins: controlplane_config.Plugins{},
 		}
 
 		actual := c.Experimental
@@ -144,6 +146,10 @@ func TestMainClusterConfig(t *testing.T) {
 
 		if c.WaitSignal.MaxBatchSize() != 1 {
 			t.Errorf("waitSignal.maxBatchSize should be 1 but was %d: %v", c.WaitSignal.MaxBatchSize(), c.WaitSignal)
+		}
+
+		if len(c.NodePools) > 0 && c.NodePools[0].ClusterAutoscalerSupport.Enabled {
+			t.Errorf("ClusterAutoscalerSupport must be disabled by default on node pools")
 		}
 	}
 
@@ -160,13 +166,13 @@ func TestMainClusterConfig(t *testing.T) {
 			{
 				WeightedCapacity: 1,
 				InstanceType:     "c4.large",
-				SpotPrice:        "0.06",
+				SpotPrice:        "",
 				RootVolume:       model.NewGp2RootVolume(30),
 			},
 			{
 				WeightedCapacity: 2,
 				InstanceType:     "c4.xlarge",
-				SpotPrice:        "0.12",
+				SpotPrice:        "",
 				RootVolume:       model.NewGp2RootVolume(60),
 			},
 		}
@@ -178,6 +184,11 @@ func TestMainClusterConfig(t *testing.T) {
 				expected,
 				actual,
 			)
+		}
+
+		globalSpotPrice := p.NodePoolConfig.SpotFleet.SpotPrice
+		if globalSpotPrice != "0.06" {
+			t.Errorf("Default spot price is expected to be 0.06 but was: %s", globalSpotPrice)
 		}
 	}
 
@@ -567,6 +578,38 @@ worker:
 			},
 			assertCluster: []ClusterTester{
 				hasDefaultCluster,
+			},
+		},
+		{
+			context: "WithDifferentReleaseChannels",
+			configYaml: minimalValidConfigYaml + `
+releaseChannel: stable
+worker:
+  nodePools:
+  - name: pool1
+    releaseChanel: alpha
+`,
+			assertConfig: []ConfigTester{
+				hasDefaultEtcdSettings,
+				asgBasedNodePoolHasWaitSignalEnabled,
+			},
+			assertCluster: []ClusterTester{
+				func(c root.Cluster, t *testing.T) {
+					cp := c.ControlPlane().StackConfig.AMI
+					np := c.NodePools()[0].AMI
+
+					if cp == "" {
+						t.Error("the default AMI ID should not be empty but it was")
+					}
+
+					if np == "" {
+						t.Error("the AMI ID for the node pool should not be empty but it was")
+					}
+
+					if cp != np {
+						t.Errorf("the default AMI ID and the AMI ID for the node pool didn't match: default=%s, nodepool=%s", cp, np)
+					}
+				},
 			},
 		},
 		{
@@ -1218,7 +1261,7 @@ worker:
 							Enabled: true,
 						},
 						ClusterAutoscalerSupport: model.ClusterAutoscalerSupport{
-							Enabled: false,
+							Enabled: true,
 						},
 						TLSBootstrap: controlplane_config.TLSBootstrap{
 							Enabled: true,
@@ -1253,11 +1296,7 @@ worker:
 							Enabled:      true,
 							DrainTimeout: 3,
 						},
-						Plugins: controlplane_config.Plugins{
-							Rbac: controlplane_config.Rbac{
-								Enabled: true,
-							},
-						},
+						Plugins: controlplane_config.Plugins{},
 					}
 
 					actual := c.Experimental
@@ -1279,6 +1318,9 @@ worker:
 		{
 			context: "WithExperimentalFeaturesForWorkerNodePool",
 			configYaml: minimalValidConfigYaml + `
+addons:
+  clusterAutoscaler:
+    enabled: true
 worker:
   nodePools:
   - name: pool1
@@ -2774,7 +2816,7 @@ worker:
 						{
 							WeightedCapacity: 1,
 							InstanceType:     "c4.large",
-							SpotPrice:        "0.06",
+							SpotPrice:        "",
 							// RootVolumeSize was not specified in the configYaml but should default to workerRootVolumeSize * weightedCapacity
 							// RootVolumeType was not specified in the configYaml but should default to "gp2"
 							RootVolume: model.NewGp2RootVolume(40),
@@ -2782,7 +2824,7 @@ worker:
 						{
 							WeightedCapacity: 2,
 							InstanceType:     "c4.xlarge",
-							SpotPrice:        "0.12",
+							SpotPrice:        "",
 							RootVolume:       model.NewGp2RootVolume(100),
 						},
 					}
@@ -2821,14 +2863,14 @@ worker:
 						{
 							WeightedCapacity: 1,
 							InstanceType:     "m4.large",
-							SpotPrice:        "0.06",
+							SpotPrice:        "",
 							// RootVolumeType was not specified in the configYaml but should default to gp2:
 							RootVolume: model.NewGp2RootVolume(40),
 						},
 						{
 							WeightedCapacity: 2,
 							InstanceType:     "m4.xlarge",
-							SpotPrice:        "0.12",
+							SpotPrice:        "",
 							RootVolume:       model.NewGp2RootVolume(80),
 						},
 					}
@@ -2871,7 +2913,7 @@ worker:
 						{
 							WeightedCapacity: 1,
 							InstanceType:     "c4.large",
-							SpotPrice:        "0.06",
+							SpotPrice:        "",
 							// RootVolumeSize was not specified in the configYaml but should default to workerRootVolumeSize * weightedCapacity
 							// RootVolumeIOPS was not specified in the configYaml but should default to workerRootVolumeIOPS * weightedCapacity
 							// RootVolumeType was not specified in the configYaml but should default to "io1"
@@ -2880,7 +2922,7 @@ worker:
 						{
 							WeightedCapacity: 2,
 							InstanceType:     "c4.xlarge",
-							SpotPrice:        "0.12",
+							SpotPrice:        "",
 							// RootVolumeType was not specified in the configYaml but should default to:
 							RootVolume: model.NewIo1RootVolume(80, 500),
 						},
@@ -3375,7 +3417,9 @@ worker:
 	for _, validCase := range validCases {
 		t.Run(validCase.context, func(t *testing.T) {
 			configBytes := validCase.configYaml
-			providedConfig, err := config.ConfigFromBytesWithEncryptService([]byte(configBytes), helper.DummyEncryptService{})
+			// TODO Allow including plugins in test data?
+			plugins := []*pluginmodel.Plugin{}
+			providedConfig, err := config.ConfigFromBytesWithEncryptService([]byte(configBytes), plugins, helper.DummyEncryptService{})
 			if err != nil {
 				t.Errorf("failed to parse config %s: %v", configBytes, err)
 				t.FailNow()
@@ -4305,7 +4349,9 @@ worker:
 	for _, invalidCase := range parseErrorCases {
 		t.Run(invalidCase.context, func(t *testing.T) {
 			configBytes := invalidCase.configYaml
-			providedConfig, err := config.ConfigFromBytes([]byte(configBytes))
+			// TODO Allow including plugins in test data?
+			plugins := []*pluginmodel.Plugin{}
+			providedConfig, err := config.ConfigFromBytes([]byte(configBytes), plugins)
 			if err == nil {
 				t.Errorf("expected to fail parsing config %s: %+v", configBytes, *providedConfig)
 				t.FailNow()

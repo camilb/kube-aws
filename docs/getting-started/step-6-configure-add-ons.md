@@ -118,12 +118,12 @@ Resources:
       ...
 ```
 
-When you are done with your cluster, [destroy your cluster][aws-step-7]
+When you are done with your cluster, [destroy your cluster][getting-started-step-7]
 
-[aws-step-1]: kubernetes-on-aws.md
-[aws-step-2]: kubernetes-on-aws-render.md
-[aws-step-3]: kubernetes-on-aws-launch.md
-[aws-step-4]: kube-aws-cluster-updates.md
-[aws-step-5]: kubernetes-on-aws-node-pool.md
-[aws-step-6]: kubernetes-on-aws-add-ons.md
-[aws-step-7]: kubernetes-on-aws-destroy.md
+[getting-started-step-1]: step-1-configure.md
+[getting-started-step-2]: step-2-render.md
+[getting-started-step-3]: step-3-launch.md
+[getting-started-step-4]: step-4-update.md
+[getting-started-step-5]: step-5-add-node-pool.md
+[getting-started-step-6]: step-6-configure-add-ons.md
+[getting-started-step-7]: step-7-destroy.md

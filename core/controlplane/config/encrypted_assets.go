@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	"io/ioutil"
@@ -25,6 +26,8 @@ type RawAssetsOnMemory struct {
 	// PEM encoded TLS assets.
 	CACert         []byte
 	CAKey          []byte
+	WorkerCACert   []byte
+	WorkerCAKey    []byte
 	APIServerCert  []byte
 	APIServerKey   []byte
 	WorkerCert     []byte
@@ -35,6 +38,7 @@ type RawAssetsOnMemory struct {
 	EtcdClientCert []byte
 	EtcdKey        []byte
 	EtcdClientKey  []byte
+	EtcdTrustedCA  []byte
 
 	// Other assets.
 	AuthTokens        []byte
@@ -45,6 +49,8 @@ type RawAssetsOnDisk struct {
 	// PEM encoded TLS assets.
 	CACert         RawCredentialOnDisk
 	CAKey          RawCredentialOnDisk
+	WorkerCACert   RawCredentialOnDisk
+	WorkerCAKey    RawCredentialOnDisk
 	APIServerCert  RawCredentialOnDisk
 	APIServerKey   RawCredentialOnDisk
 	WorkerCert     RawCredentialOnDisk
@@ -55,6 +61,7 @@ type RawAssetsOnDisk struct {
 	EtcdClientCert RawCredentialOnDisk
 	EtcdKey        RawCredentialOnDisk
 	EtcdClientKey  RawCredentialOnDisk
+	EtcdTrustedCA  RawCredentialOnDisk
 
 	// Other assets.
 	AuthTokens        RawCredentialOnDisk
@@ -65,6 +72,8 @@ type EncryptedAssetsOnDisk struct {
 	// Encrypted PEM encoded TLS assets.
 	CACert         EncryptedCredentialOnDisk
 	CAKey          EncryptedCredentialOnDisk
+	WorkerCACert   EncryptedCredentialOnDisk
+	WorkerCAKey    EncryptedCredentialOnDisk
 	APIServerCert  EncryptedCredentialOnDisk
 	APIServerKey   EncryptedCredentialOnDisk
 	WorkerCert     EncryptedCredentialOnDisk
@@ -75,6 +84,7 @@ type EncryptedAssetsOnDisk struct {
 	EtcdClientCert EncryptedCredentialOnDisk
 	EtcdKey        EncryptedCredentialOnDisk
 	EtcdClientKey  EncryptedCredentialOnDisk
+	EtcdTrustedCA  EncryptedCredentialOnDisk
 
 	// Other encrypted assets.
 	AuthTokens        EncryptedCredentialOnDisk
@@ -85,6 +95,8 @@ type CompactAssets struct {
 	// PEM -> encrypted -> gzip -> base64 encoded TLS assets.
 	CACert         string
 	CAKey          string
+	WorkerCACert   string
+	WorkerCAKey    string
 	APIServerCert  string
 	APIServerKey   string
 	WorkerCert     string
@@ -95,6 +107,7 @@ type CompactAssets struct {
 	EtcdClientCert string
 	EtcdClientKey  string
 	EtcdKey        string
+	EtcdTrustedCA  string
 
 	// Encrypted -> gzip -> base64 encoded assets.
 	AuthTokens        string
@@ -129,15 +142,63 @@ type CredentialsOptions struct {
 	CaCertPath string
 }
 
-func (c *Cluster) NewAssetsOnDisk(dir string, renderCredentialsOpts CredentialsOptions, caKey *rsa.PrivateKey, caCert *x509.Certificate) (*RawAssetsOnDisk, error) {
+func (c *Cluster) NewAssetsOnDisk(dir string, renderCredentialsOpts CredentialsOptions) (*RawAssetsOnDisk, error) {
+	fmt.Println("Generating credentials...")
+	var caKey *rsa.PrivateKey
+	var caCert *x509.Certificate
+	if renderCredentialsOpts.GenerateCA {
+		var err error
+		caKey, caCert, err = c.NewTLSCA()
+		if err != nil {
+			return nil, fmt.Errorf("failed generating cluster CA: %v", err)
+		}
+		fmt.Printf("-> Generating new TLS CA\n")
+	} else {
+		fmt.Printf("-> Parsing existing TLS CA\n")
+		if caKeyBytes, err := ioutil.ReadFile(renderCredentialsOpts.CaKeyPath); err != nil {
+			return nil, fmt.Errorf("failed reading ca key file %s : %v", renderCredentialsOpts.CaKeyPath, err)
+		} else {
+			if caKey, err = tlsutil.DecodePrivateKeyPEM(caKeyBytes); err != nil {
+				return nil, fmt.Errorf("failed parsing ca key: %v", err)
+			}
+		}
+		if caCertBytes, err := ioutil.ReadFile(renderCredentialsOpts.CaCertPath); err != nil {
+			return nil, fmt.Errorf("failed reading ca cert file %s : %v", renderCredentialsOpts.CaCertPath, err)
+		} else {
+			if caCert, err = tlsutil.DecodeCertificatePEM(caCertBytes); err != nil {
+				return nil, fmt.Errorf("failed parsing ca cert: %v", err)
+			}
+		}
+	}
+
+	fmt.Println("-> Generating new assets")
 	assets, err := c.NewAssetsOnMemory(caKey, caCert)
 	if err != nil {
 		return nil, fmt.Errorf("Error generating default assets: %v", err)
 	}
-	if err := assets.WriteToDir(dir, renderCredentialsOpts.GenerateCA); err != nil {
-		return nil, fmt.Errorf("Error create assets: %v", err)
+
+	tlsBootstrappingEnabled := c.Experimental.TLSBootstrap.Enabled
+	certsManagedByKubeAws := c.ManageCertificates
+	caKeyRequiredOnController := certsManagedByKubeAws && tlsBootstrappingEnabled
+
+	fmt.Printf("--> Summarizing the configuration\n    Kubelet TLS bootstrapping enabled=%v, TLS certificates managed by kube-aws=%v, CA key required on controller nodes=%v\n", tlsBootstrappingEnabled, certsManagedByKubeAws, caKeyRequiredOnController)
+
+	fmt.Println("--> Writing to the storage")
+	alsoWriteCAKey := renderCredentialsOpts.GenerateCA || caKeyRequiredOnController
+	if err := assets.WriteToDir(dir, alsoWriteCAKey); err != nil {
+		return nil, fmt.Errorf("Error creating assets: %v", err)
 	}
-	return ReadRawAssets(dir, true)
+
+	{
+		fmt.Println("--> Verifying the result")
+		verified, err := ReadRawAssets(dir, certsManagedByKubeAws, tlsBootstrappingEnabled)
+
+		if err != nil {
+			return nil, fmt.Errorf("failed verifying the result: %v", err)
+		}
+
+		return verified, nil
+	}
 }
 
 func (c *Cluster) NewAssetsOnMemory(caKey *rsa.PrivateKey, caCert *x509.Certificate) (*RawAssetsOnMemory, error) {
@@ -185,9 +246,9 @@ func (c *Cluster) NewAssetsOnMemory(caKey *rsa.PrivateKey, caCert *x509.Certific
 	etcdConfig := tlsutil.ServerCertConfig{
 		CommonName: "kube-etcd",
 		DNSNames:   c.EtcdCluster().DNSNames(),
-		//etcd https client/peer interfaces are not exposed externally
-		//will live the full year with the CA
-		Duration: tlsutil.Duration365d,
+		// etcd https client/peer interfaces are not exposed externally
+		// but anyway we'll make it valid for the same duration as other certs just because it is easy to implement.
+		Duration: certDuration,
 	}
 
 	etcdCert, err := tlsutil.NewSignedServerCertificate(etcdConfig, etcdKey, caCert, caKey)
@@ -254,7 +315,7 @@ func (c *Cluster) NewAssetsOnMemory(caKey *rsa.PrivateKey, caCert *x509.Certific
 	}, nil
 }
 
-func ReadRawAssets(dirname string, manageCertificates bool) (*RawAssetsOnDisk, error) {
+func ReadRawAssets(dirname string, manageCertificates bool, caKeyRequiredOnController bool) (*RawAssetsOnDisk, error) {
 	defaultTokensFile := ""
 	defaultTLSBootstrapToken, err := RandomTLSBootstrapTokenString()
 	if err != nil {
@@ -279,7 +340,7 @@ func ReadRawAssets(dirname string, manageCertificates bool) (*RawAssetsOnDisk, e
 		// Assumes no default values for any cert
 		files = append(files, []entry{
 			{"ca.pem", &r.CACert, nil},
-			{"ca-key.pem", &r.CAKey, nil},
+			{"worker-ca.pem", &r.WorkerCACert, nil},
 			{"apiserver.pem", &r.APIServerCert, nil},
 			{"apiserver-key.pem", &r.APIServerKey, nil},
 			{"worker.pem", &r.WorkerCert, nil},
@@ -290,7 +351,12 @@ func ReadRawAssets(dirname string, manageCertificates bool) (*RawAssetsOnDisk, e
 			{"etcd-key.pem", &r.EtcdKey, nil},
 			{"etcd-client.pem", &r.EtcdClientCert, nil},
 			{"etcd-client-key.pem", &r.EtcdClientKey, nil},
+			{"etcd-trusted-ca.pem", &r.EtcdTrustedCA, nil},
 		}...)
+
+		if caKeyRequiredOnController {
+			files = append(files, entry{"worker-ca-key.pem", &r.WorkerCAKey, nil})
+		}
 	}
 
 	for _, file := range files {
@@ -306,7 +372,7 @@ func ReadRawAssets(dirname string, manageCertificates bool) (*RawAssetsOnDisk, e
 	return r, nil
 }
 
-func ReadOrEncryptAssets(dirname string, manageCertificates bool, encryptor CachedEncryptor) (*EncryptedAssetsOnDisk, error) {
+func ReadOrEncryptAssets(dirname string, manageCertificates bool, caKeyRequiredOnController bool, encryptor CachedEncryptor) (*EncryptedAssetsOnDisk, error) {
 	defaultTokensFile := ""
 	defaultTLSBootstrapToken, err := RandomTLSBootstrapTokenString()
 	if err != nil {
@@ -316,43 +382,57 @@ func ReadOrEncryptAssets(dirname string, manageCertificates bool, encryptor Cach
 	r := new(EncryptedAssetsOnDisk)
 
 	type entry struct {
-		name         string
-		data         *EncryptedCredentialOnDisk
-		defaultValue *string
+		name          string
+		data          *EncryptedCredentialOnDisk
+		defaultValue  *string
+		readEncrypted bool
 	}
 
 	files := []entry{
-		{"tokens.csv", &r.AuthTokens, &defaultTokensFile},
-		{"kubelet-tls-bootstrap-token", &r.TLSBootstrapToken, &defaultTLSBootstrapToken},
+		{"tokens.csv", &r.AuthTokens, &defaultTokensFile, true},
+		{"kubelet-tls-bootstrap-token", &r.TLSBootstrapToken, &defaultTLSBootstrapToken, true},
 	}
 
 	if manageCertificates {
 		files = append(files, []entry{
-			{"ca.pem", &r.CACert, nil},
-			{"ca-key.pem", &r.CAKey, nil},
-			{"apiserver.pem", &r.APIServerCert, nil},
-			{"apiserver-key.pem", &r.APIServerKey, nil},
-			{"worker.pem", &r.WorkerCert, nil},
-			{"worker-key.pem", &r.WorkerKey, nil},
-			{"admin.pem", &r.AdminCert, nil},
-			{"admin-key.pem", &r.AdminKey, nil},
-			{"etcd.pem", &r.EtcdCert, nil},
-			{"etcd-key.pem", &r.EtcdKey, nil},
-			{"etcd-client.pem", &r.EtcdClientCert, nil},
-			{"etcd-client-key.pem", &r.EtcdClientKey, nil},
+			{"ca.pem", &r.CACert, nil, false},
+			{"worker-ca.pem", &r.WorkerCACert, nil, false},
+			{"apiserver.pem", &r.APIServerCert, nil, false},
+			{"apiserver-key.pem", &r.APIServerKey, nil, true},
+			{"worker.pem", &r.WorkerCert, nil, false},
+			{"worker-key.pem", &r.WorkerKey, nil, true},
+			{"admin.pem", &r.AdminCert, nil, false},
+			{"admin-key.pem", &r.AdminKey, nil, true},
+			{"etcd.pem", &r.EtcdCert, nil, false},
+			{"etcd-key.pem", &r.EtcdKey, nil, true},
+			{"etcd-client.pem", &r.EtcdClientCert, nil, false},
+			{"etcd-client-key.pem", &r.EtcdClientKey, nil, true},
+			{"etcd-trusted-ca.pem", &r.EtcdTrustedCA, nil, false},
 		}...)
+
+		if caKeyRequiredOnController {
+			files = append(files, entry{"worker-ca-key.pem", &r.WorkerCAKey, nil, true})
+		}
 	}
 
 	for _, file := range files {
 		path := filepath.Join(dirname, file.name)
-		data, err := encryptor.EncryptedCredentialFromPath(path, file.defaultValue)
-		if err != nil {
-			return nil, fmt.Errorf("Error encrypting %s: %v", path, err)
-		}
+		if file.readEncrypted {
+			data, err := encryptor.EncryptedCredentialFromPath(path, file.defaultValue)
+			if err != nil {
+				return nil, fmt.Errorf("Error encrypting %s: %v", path, err)
+			}
 
-		*file.data = *data
-		if err := data.Persist(); err != nil {
-			return nil, fmt.Errorf("Error persisting %s: %v", path, err)
+			*file.data = *data
+			if err := data.Persist(); err != nil {
+				return nil, fmt.Errorf("Error persisting %s: %v", path, err)
+			}
+		} else {
+			raw, err := RawCredentialFileFromPath(path, file.defaultValue)
+			if err != nil {
+				return nil, fmt.Errorf("Error reading credential file %s: %v", path, err)
+			}
+			(*file.data).content = raw.content
 		}
 	}
 
@@ -361,34 +441,105 @@ func ReadOrEncryptAssets(dirname string, manageCertificates bool, encryptor Cach
 
 func (r *RawAssetsOnMemory) WriteToDir(dirname string, includeCAKey bool) error {
 	assets := []struct {
-		name string
-		data []byte
+		name      string
+		data      []byte
+		overwrite bool
 	}{
-		{"ca.pem", r.CACert},
-		{"ca-key.pem", r.CAKey},
-		{"apiserver.pem", r.APIServerCert},
-		{"apiserver-key.pem", r.APIServerKey},
-		{"worker.pem", r.WorkerCert},
-		{"worker-key.pem", r.WorkerKey},
-		{"admin.pem", r.AdminCert},
-		{"admin-key.pem", r.AdminKey},
-		{"etcd.pem", r.EtcdCert},
-		{"etcd-key.pem", r.EtcdKey},
-		{"etcd-client.pem", r.EtcdClientCert},
-		{"etcd-client-key.pem", r.EtcdClientKey},
+		{"ca.pem", r.CACert, true},
+		{"worker-ca.pem", r.WorkerCACert, true},
+		{"worker-ca-key.pem", r.WorkerCAKey, true},
+		{"apiserver.pem", r.APIServerCert, true},
+		{"apiserver-key.pem", r.APIServerKey, true},
+		{"worker.pem", r.WorkerCert, true},
+		{"worker-key.pem", r.WorkerKey, true},
+		{"admin.pem", r.AdminCert, true},
+		{"admin-key.pem", r.AdminKey, true},
+		{"etcd.pem", r.EtcdCert, true},
+		{"etcd-key.pem", r.EtcdKey, true},
+		{"etcd-client.pem", r.EtcdClientCert, true},
+		{"etcd-client-key.pem", r.EtcdClientKey, true},
+		{"etcd-trusted-ca.pem", r.EtcdTrustedCA, true},
+		{"kubelet-tls-bootstrap-token", r.TLSBootstrapToken, true},
 
-		{"tokens.csv", r.AuthTokens},
-		{"kubelet-tls-bootstrap-token", r.TLSBootstrapToken},
+		// Content entirely provided by user, so do not overwrite it if
+		// the file already exists
+		{"tokens.csv", r.AuthTokens, false},
 	}
+
+	if includeCAKey {
+		// This is required to be linked from worker-ca-key.pem
+		assets = append(assets, struct {
+			name      string
+			data      []byte
+			overwrite bool
+		}{"ca-key.pem", r.CAKey, true})
+	}
+
 	for _, asset := range assets {
 		path := filepath.Join(dirname, asset.name)
 
-		if asset.name != "ca-key.pem" || includeCAKey {
-			if err := ioutil.WriteFile(path, asset.data, 0600); err != nil {
+		if !asset.overwrite {
+			info, err := os.Stat(path)
+			if info != nil {
+				continue
+			}
+
+			// Unexpected error
+			if err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
+		if err := ioutil.WriteFile(path, asset.data, 0600); err != nil {
+			return err
+		}
 	}
+
+	// etcd trusted ca and worker-ca are separate files, but pointing to ca.pem by default.
+	// In advanced configurations, when certs are managed outside of kube-aws,
+	// these can be separate CAs to ensure that worker nodes have no certs which would let them
+	// access etcd directly. If worker-ca.pem != ca.pem, then ca.pem should include worker-ca.pem
+	// to let TLS bootstrapped workers acces APIServer.
+	type symlink struct {
+		from string
+		to   string
+	}
+	symlinks := []symlink{
+		{"ca.pem", "worker-ca.pem"},
+		{"ca.pem", "etcd-trusted-ca.pem"},
+	}
+
+	if includeCAKey {
+		symlinks = append(symlinks, symlink{"ca-key.pem", "worker-ca-key.pem"})
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	if err := os.Chdir(dirname); err != nil {
+		return err
+	}
+
+	for _, sl := range symlinks {
+		from := sl.from
+		to := sl.to
+
+		if _, err := os.Lstat(to); err == nil {
+			if err := os.Remove(to); err != nil {
+				return err
+			}
+		}
+
+		if err := os.Symlink(from, to); err != nil {
+			return err
+		}
+	}
+
+	if err := os.Chdir(wd); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -399,6 +550,8 @@ func (r *EncryptedAssetsOnDisk) WriteToDir(dirname string) error {
 	}{
 		{"ca.pem", r.CACert},
 		{"ca-key.pem", r.CAKey},
+		{"worker-ca.pem", r.WorkerCACert},
+		{"worker-ca-key.pem", r.WorkerCAKey},
 		{"apiserver.pem", r.APIServerCert},
 		{"apiserver-key.pem", r.APIServerKey},
 		{"worker.pem", r.WorkerCert},
@@ -409,6 +562,7 @@ func (r *EncryptedAssetsOnDisk) WriteToDir(dirname string) error {
 		{"etcd-key.pem", r.EtcdKey},
 		{"etcd-client.pem", r.EtcdClientCert},
 		{"etcd-client-key.pem", r.EtcdClientKey},
+		{"etcd-trusted-ca.pem", r.EtcdTrustedCA},
 
 		{"tokens.csv", r.AuthTokens},
 		{"kubelet-tls-bootstrap-token", r.TLSBootstrapToken},
@@ -442,7 +596,9 @@ func (r *RawAssetsOnDisk) Compact() (*CompactAssets, error) {
 		return out
 	}
 	compactAssets := CompactAssets{
-		CACert:         compact(r.CACert),
+		CACert:       compact(r.CACert), // why no CAKey here?
+		WorkerCACert: compact(r.WorkerCACert),
+		//WorkerCAKey:    compact(r.WorkerCAKey),
 		APIServerCert:  compact(r.APIServerCert),
 		APIServerKey:   compact(r.APIServerKey),
 		WorkerCert:     compact(r.WorkerCert),
@@ -453,6 +609,7 @@ func (r *RawAssetsOnDisk) Compact() (*CompactAssets, error) {
 		EtcdClientCert: compact(r.EtcdClientCert),
 		EtcdClientKey:  compact(r.EtcdClientKey),
 		EtcdKey:        compact(r.EtcdKey),
+		EtcdTrustedCA:  compact(r.EtcdTrustedCA),
 
 		AuthTokens:        compact(r.AuthTokens),
 		TLSBootstrapToken: compact(r.TLSBootstrapToken),
@@ -484,6 +641,8 @@ func (r *EncryptedAssetsOnDisk) Compact() (*CompactAssets, error) {
 	compactAssets := CompactAssets{
 		CACert:         compact(r.CACert),
 		CAKey:          compact(r.CAKey),
+		WorkerCACert:   compact(r.WorkerCACert),
+		WorkerCAKey:    compact(r.WorkerCAKey),
 		APIServerCert:  compact(r.APIServerCert),
 		APIServerKey:   compact(r.APIServerKey),
 		WorkerCert:     compact(r.WorkerCert),
@@ -494,6 +653,7 @@ func (r *EncryptedAssetsOnDisk) Compact() (*CompactAssets, error) {
 		EtcdClientCert: compact(r.EtcdClientCert),
 		EtcdClientKey:  compact(r.EtcdClientKey),
 		EtcdKey:        compact(r.EtcdKey),
+		EtcdTrustedCA:  compact(r.EtcdTrustedCA),
 
 		AuthTokens:        compact(r.AuthTokens),
 		TLSBootstrapToken: compact(r.TLSBootstrapToken),
@@ -510,7 +670,7 @@ type KMSConfig struct {
 	KMSKeyARN      string
 }
 
-func ReadOrCreateEncryptedAssets(tlsAssetsDir string, manageCertificates bool, kmsConfig KMSConfig) (*EncryptedAssetsOnDisk, error) {
+func ReadOrCreateEncryptedAssets(tlsAssetsDir string, manageCertificates bool, caKeyRequiredOnController bool, kmsConfig KMSConfig) (*EncryptedAssetsOnDisk, error) {
 	var kmsSvc EncryptService
 
 	// TODO Cleaner way to inject this dependency
@@ -532,11 +692,11 @@ func ReadOrCreateEncryptedAssets(tlsAssetsDir string, manageCertificates bool, k
 		bytesEncryptionService: encryptionSvc,
 	}
 
-	return ReadOrEncryptAssets(tlsAssetsDir, manageCertificates, encryptor)
+	return ReadOrEncryptAssets(tlsAssetsDir, manageCertificates, caKeyRequiredOnController, encryptor)
 }
 
-func ReadOrCreateCompactAssets(assetsDir string, manageCertificates bool, kmsConfig KMSConfig) (*CompactAssets, error) {
-	encryptedAssets, err := ReadOrCreateEncryptedAssets(assetsDir, manageCertificates, kmsConfig)
+func ReadOrCreateCompactAssets(assetsDir string, manageCertificates bool, caKeyRequiredOnController bool, kmsConfig KMSConfig) (*CompactAssets, error) {
+	encryptedAssets, err := ReadOrCreateEncryptedAssets(assetsDir, manageCertificates, caKeyRequiredOnController, kmsConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read/create encrypted assets: %v", err)
 	}
@@ -549,8 +709,8 @@ func ReadOrCreateCompactAssets(assetsDir string, manageCertificates bool, kmsCon
 	return compactAssets, nil
 }
 
-func ReadOrCreateUnencryptedCompactAssets(assetsDir string, manageCertificates bool) (*CompactAssets, error) {
-	unencryptedAssets, err := ReadRawAssets(assetsDir, manageCertificates)
+func ReadOrCreateUnencryptedCompactAssets(assetsDir string, manageCertificates bool, caKeyRequiredOnController bool) (*CompactAssets, error) {
+	unencryptedAssets, err := ReadRawAssets(assetsDir, manageCertificates, caKeyRequiredOnController)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read/create encrypted assets: %v", err)
 	}

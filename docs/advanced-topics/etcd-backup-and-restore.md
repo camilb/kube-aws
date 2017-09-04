@@ -9,22 +9,22 @@ ssh into one of etcd nodes and run the following command:
 ```bash
 set -a; source /var/run/coreos/etcdadm-environment; set +a
 /opt/bin/etcdadm save
-``````
+```
 
 The command takes an etcd snapshot by running an appropriate `etcdctl snapshot save` command.
 The snapshot is then exported to the S3 URI: `s3://<your-bucket-name>/.../<your-cluster-name>/exported/etcd-snapshots/snapshot.db`.
 
 ### Automatically taking an etcd snapshot
 
-A feature to periodically take a snapshot of an etcd cluster can be enabled by specifying: 
+A feature to periodically take a snapshot of an etcd cluster can be enabled by specifying the following in `cluster.yaml`:
+
 ```yaml
 etcd:
   snapshot:
     automated: true
-``` 
-in `cluster.yaml`.
+```
 
-When enabled, the command `etcdadm save` is called periodically(every 1 minute by default) via a systemd timer.
+When enabled, the command `etcdadm save` is called periodically (every 1 minute by default) via a systemd timer.
 
 ## Restore
 

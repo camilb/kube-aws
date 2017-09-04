@@ -1,6 +1,6 @@
 # Configure your Kubernetes cluster on AWS
 
-This is the second step of [running Kubernetes on AWS][aws-step-1]. Before we launch our cluster, let's define a few parameters that the cluster requires.
+This is the second step of [running Kubernetes on AWS](README.md). Before we launch our cluster, let's define a few parameters that the cluster requires.
 
 ## Cluster parameters
 
@@ -162,12 +162,12 @@ At this point you should be ready to create your cluster. You can also now check
 Each component certificate is only valid for 90 days, while the CA is valid for 365 days.
 If deploying a production Kubernetes cluster, consider establishing PKI independently of this tool first. [Read more below.][tls-note]
 
-<div class="co-m-docs-next-step">
-  <p><strong>Did everything render correctly?</strong></p>
-  <p>If you are familiar with CoreOS and the AWS platform, you may want to include some additional customizations or optional features. Read on below to explore more.</p>
-  <a href="kubernetes-on-aws-launch.md" class="btn btn-primary btn-icon-right"  data-category="Docs Next" data-event="Kubernetes: AWS Launch">Yes, ready to launch the cluster</a>
-  <a href="kubernetes-on-aws-render.md#customizations-to-your-cluster" class="btn btn-link btn-icon-right"  data-category="Docs Next" data-event="Kubernetes: AWS Customizations">View optional features &amp; customizations</a>
-</div>
+**Did everything render correctly?**
+If you are familiar with CoreOS and the AWS platform, you may want to include some additional customizations or optional features. Read on below to explore more.
+
+[Yes, ready to launch the cluster][getting-started-step-3]
+
+[View optional features &amp; customizations below](#customizations-to-your-cluster)
 
 ## Customizations to your cluster
 
@@ -351,7 +351,7 @@ This includes the certificate authority, signed server certificates for the Kube
     - kubernetes.default
     - kubernetes.default.svc
     - kubernetes.default.svc.cluster.local
-  <br/><br/>
+
 
 * **WorkerCert, WorkerKey**
 
@@ -384,15 +384,15 @@ This is an important step to make sure your stack will launch successfully:
 $ kube-aws validate --s3-uri s3://<your-bucket-name>/<prefix>
 ```
 
-If your files are valid, you are ready to [launch your cluster][aws-step-3].
+If your files are valid, you are ready to [launch your cluster][getting-started-step-3].
 
-[aws-step-1]: kubernetes-on-aws.md
-[aws-step-2]: kubernetes-on-aws-render.md
-[aws-step-3]: kubernetes-on-aws-launch.md
-[aws-step-4]: kube-aws-cluster-updates.md
-[aws-step-5]: kubernetes-on-aws-node-pool.md
-[aws-step-6]: kubernetes-on-aws-add-ons.md
-[aws-step-7]: kubernetes-on-aws-destroy.md
+[getting-started-step-1]: step-1-configure.md
+[getting-started-step-2]: step-2-render.md
+[getting-started-step-3]: step-3-launch.md
+[getting-started-step-4]: step-4-update.md
+[getting-started-step-5]: step-5-add-node-pool.md
+[getting-started-step-6]: step-6-configure-add-ons.md
+[getting-started-step-7]: step-7-destroy.md
 [k8s-openssl]: openssl.md
 [tls-note]: #certificates-and-keys
 [route53]: https://aws.amazon.com/route53/

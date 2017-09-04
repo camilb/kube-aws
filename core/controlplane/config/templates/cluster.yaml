@@ -236,10 +236,11 @@ worker:
   nodePools:
     - # Name of this node pool. Must be unique among all the node pools in this cluster
       name: nodepool1
+#      # Subnet(s) to which worker nodes in this node pool are deployed
+#      # References subnets defined under the top-level `subnets` key by their names
 #      # If omitted, public subnets are created by kube-aws and used for worker nodes
 #      subnets:
-#      - # References subnets defined under the top-level `subnets` key by their names
-#        name: ManagedPublicSubnet1
+#      - name: ManagedPublicSubnet1
 #
 #      # Existing "glue" security groups attached to worker nodes which are typically used to allow
 #      # access from worker nodes to services running on an existing infrastructure
@@ -613,7 +614,7 @@ worker:
 #      arn: "arn:aws:iam::YOURACCOUNTID:instance-profile/INSTANCEPROFILENAME"
 #
 #  # The version of etcd to be used. Set to e.g. "3.2.1" to use etcd3
-#  version: 3.2.5
+#  version: 3.2.6
 #
 #  snapshot:
 #    # Set to true to periodically take an etcd snapshot
@@ -920,7 +921,7 @@ worker:
 # and pulling from quay or dockerhub is slow and you get many timeouts.
 
 # Version of hyperkube image to use. This is the tag for the hyperkube image repository.
-# kubernetesVersion: v1.7.3_coreos.0
+# kubernetesVersion: v1.7.5_coreos.0
 
 # Hyperkube image repository to use.
 # hyperkubeImage:
@@ -963,6 +964,12 @@ worker:
 #  tag: 1.1.1
 #  rktPullDocker: false
 
+# kube2iam image repository to use.
+#kube2iamImage:
+#  repo: jtblin/kube2iam
+#  tag: 0.7.0
+#  rktPullDocker: false
+
 # kube DNS image repository to use.
 #kubeDnsImage:
 #  repo: gcr.io/google_containers/kubedns-amd64
@@ -993,10 +1000,22 @@ worker:
 #  tag: 1.2
 #  rktPullDocker: false
 
+# Helm image repository to use.
+#helmImage:
+#  repo: quay.io/kube-aws/helm
+#  tag: v2.6.0
+#  rktPullDocker: false
+
+# Tiller (Helm backend) image repository to use.
+#tillerImage:
+#  repo: gcr.io/kubernetes-helm/tiller
+#  tag: v2.6.0
+#  rktPullDocker: false
+
 # Heapster image repository to use.
 #heapsterImage:
 #  repo: gcr.io/google_containers/heapster
-#  tag: v1.4.0
+#  tag: v1.4.1
 #  rktPullDocker: false
 
 # Addon Resizer image repository to use.
@@ -1160,6 +1179,10 @@ addons:
 #   # requests related to certificate provisioning.
 #   # The bootstrap token is automatically generated in ./credentials/kubelet-tls-bootstrap-token.
 #   tlsBootstrap:
+#     enabled: true
+#   # Enables the Node authorization + node restriction admission controller (requires Kubernetes 1.7.4+)
+#   # Requires TLS bootstrapping to be enabled as well
+#   nodeAuthorizer:
 #     enabled: true
 #   # This option has not yet been tested with rkt as container runtime
 #   ephemeralImageStorage:
