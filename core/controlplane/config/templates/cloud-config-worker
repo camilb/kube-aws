@@ -46,18 +46,34 @@ coreos:
   units:
 {{- range $u := .CustomSystemdUnits}}
     - name: {{$u.Name}}
+      {{- if $u.Command }}
       command: {{ $u.Command }}
+      {{- end}}
       {{- if $u.Enable }}
       enable: {{$u.Enable}}
       {{- end }}
       {{- if $u.Runtime }}
       runtime: {{$u.Runtime}}
       {{- end }}
+      {{- if $u.DropInsPresent }}
+      drop-ins:
+        {{- range $d := $u.DropIns }}
+        - name: {{ $d.Name }}
+          content: |
+            {{- range $i := $d.ContentArray }}
+            {{ $i }}
+            {{- end}}
+        {{- end }}
+      {{- end}}
+      {{- if $u.ContentPresent }}
       content: |
-        {{- range $l := $u.ContentArray}}
+        {{- range $l := $u.ContentArray }}
         {{ $l }}
         {{- end }}
+      {{- end}}
 {{- end}}
+    - name: systemd-modules-load.service
+      command: restart
 {{range $volumeMountSpecIndex, $volumeMountSpec := .VolumeMounts}}
     - name: format-{{$volumeMountSpec.SystemdMountName}}.service
       command: start
@@ -259,6 +275,7 @@ coreos:
         ExecStartPre=/usr/bin/mkdir -p /var/lib/cni
         ExecStartPre=/usr/bin/mkdir -p /var/log/containers
         ExecStartPre=/usr/bin/mkdir -p /opt/cni/bin
+        ExecStartPre=/usr/bin/mkdir -p /etc/kubernetes/manifests
         ExecStartPre=/bin/sh -ec "find /etc/kubernetes/manifests /etc/kubernetes/cni/net.d/  -maxdepth 1 -type f | xargs --no-run-if-empty sed -i 's|#ETCD_ENDPOINTS#|${ETCD_ENDPOINTS}|'"
         ExecStartPre=/usr/bin/etcdctl \
                        --ca-file /etc/kubernetes/ssl/etcd-trusted-ca.pem \
@@ -289,12 +306,12 @@ coreos:
         --cloud-provider=aws \
         --cert-dir=/etc/kubernetes/ssl \
         {{- if and .Experimental.TLSBootstrap.Enabled .AssetsConfig.HasTLSBootstrapToken }}
-        --experimental-bootstrap-kubeconfig=/etc/kubernetes/worker-bootstrap-kubeconfig.yaml \
+        --experimental-bootstrap-kubeconfig=/etc/kubernetes/kubeconfig/worker-bootstrap.yaml \
         {{- else }}
         --tls-cert-file=/etc/kubernetes/ssl/worker.pem \
         --tls-private-key-file=/etc/kubernetes/ssl/worker-key.pem \
         {{- end }}
-        --kubeconfig=/etc/kubernetes/worker-kubeconfig.yaml \
+        --kubeconfig=/etc/kubernetes/kubeconfig/worker.yaml \
         {{- if .FeatureGates.Enabled }}
         --feature-gates="{{.FeatureGates.String}}" \
         {{- end }}
@@ -479,7 +496,7 @@ coreos:
           {{end -}}
           {{.HyperkubeImage.RepoWithTag}} /bin/bash \
             -ec 'echo "placing labels and annotations with additional AWS parameters."; \
-             kctl="/kubectl --server={{.APIEndpointURL}}:443 --kubeconfig=/etc/kubernetes/worker-kubeconfig.yaml"; \
+             kctl="/kubectl --server={{.APIEndpointURL}}:443 --kubeconfig=/etc/kubernetes/kubeconfig/worker.yaml"; \
              kctl_label="$kctl label --overwrite nodes/$(hostname)"; \
              kctl_annotate="$kctl annotate --overwrite nodes/$(hostname)"; \
              {{if not .SpotFleet.Enabled -}}
@@ -597,6 +614,13 @@ write_files:
     content: {{$w.GzippedBase64Content}}
   {{- end }}
 {{- end }}
+  - path: /etc/modules-load.d/ip_vs.conf
+    content: |
+      ip_vs
+      ip_vs_rr
+      ip_vs_wrr
+      ip_vs_sh
+      nf_conntrack_ipv4
 {{if and (.AmazonSsmAgent.Enabled) (ne .AmazonSsmAgent.DownloadUrl "")}}
   - path: "/opt/ssm/bin/install-ssm-agent.sh"
     permissions: 0700
@@ -791,7 +815,7 @@ write_files:
            {{ if and .Experimental.TLSBootstrap.Enabled .AssetsConfig.HasTLSBootstrapToken }}
            echo injecting token into the kubelet bootstrap kubeconfig file
            bootstrap_token=$(cat /etc/kubernetes/auth/kubelet-tls-bootstrap-token.tmp);
-           sed -i -e "s#\$KUBELET_BOOTSTRAP_TOKEN#$bootstrap_token#g" /etc/kubernetes/worker-bootstrap-kubeconfig.yaml
+           sed -i -e "s#\$KUBELET_BOOTSTRAP_TOKEN#$bootstrap_token#g" /etc/kubernetes/kubeconfig/worker-bootstrap.yaml
            {{ end }}
            echo done.'
 
@@ -892,49 +916,29 @@ write_files:
 {{end}}
 {{end}}
 
-  - path: /etc/kubernetes/manifests/kube-proxy.yaml
+  # File needed on every node (used by the kube-proxy DaemonSet), including controllers
+  - path: /etc/kubernetes/kubeconfig/kube-proxy.yaml
     content: |
         apiVersion: v1
-        kind: Pod
-        metadata:
-          name: kube-proxy
-          namespace: kube-system
-          annotations:
-            rkt.alpha.kubernetes.io/stage1-name-override: coreos.com/rkt/stage1-fly
-        spec:
-          hostNetwork: true
-          containers:
-          - name: kube-proxy
-            image: {{.HyperkubeImage.RepoWithTag}}
-            command:
-            - /hyperkube
-            - proxy
-            - --master={{.APIEndpointURL}}
-            - --kubeconfig=/etc/kubernetes/worker-kubeconfig.yaml
-            securityContext:
-              privileged: true
-            volumeMounts:
-              - mountPath: /etc/ssl/certs
-                name: ssl-certs
-              - mountPath: /etc/kubernetes
-                name: kubeconfig
-                readOnly: true
-              - mountPath: /var/run/dbus
-                name: dbus
-                readOnly: false
-          volumes:
-            - name: ssl-certs
-              hostPath:
-                path: /usr/share/ca-certificates
-            - name: kubeconfig
-              hostPath:
-                path: /etc/kubernetes
-            - name: dbus
-              hostPath:
-                path: /var/run/dbus
+        kind: Config
+        clusters:
+        - name: default
+          cluster:
+            certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+            server: {{.APIEndpointURL}}:443
+        users:
+        - name: default
+          user:
+            tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+        contexts:
+        - context:
+            cluster: default
+            user: default
+          name: default
+        current-context: default
 
 {{ if and .Experimental.TLSBootstrap.Enabled .AssetsConfig.HasTLSBootstrapToken }}
-  - path: /etc/kubernetes/worker-bootstrap-kubeconfig.yaml
+  - path: /etc/kubernetes/kubeconfig/worker-bootstrap.yaml
     content: |
         apiVersion: v1
         kind: Config
@@ -954,7 +958,7 @@ write_files:
           name: tls-bootstrap-context
         current-context: tls-bootstrap-context
 {{ else }}
-  - path: /etc/kubernetes/worker-kubeconfig.yaml
+  - path: /etc/kubernetes/kubeconfig/worker.yaml
     content: |
         apiVersion: v1
         kind: Config
@@ -1045,7 +1049,7 @@ write_files:
       set -e
       function is_gpu_enabled(){
         local instance_type=$1
-        [[ -n $instance_type ]] && ([[ $instance_type == p2* ]] || [[ $instance_type ==  g2* ]])
+        [[ -n $instance_type ]] && ([[ $instance_type == p2* ]] || [[ $instance_type == p3* ]] || [[ $instance_type ==  g2* ]] || [[ $instance_type == g3* ]])
       }
 
       INSTANCE_TYPE=$(curl -s http://169.254.169.254/latest/meta-data/instance-type)
@@ -1396,6 +1400,8 @@ write_files:
 
       mkdir -p /etc/ld.so.conf.d/ 2>/dev/null
       echo "/opt/nvidia/current/lib64" > /etc/ld.so.conf.d/nvidia.conf
+      rm /opt/nvidia/current/lib64/libEGL.so.1
+      ln -s /opt/nvidia/current/lib64/libEGL.so.$DRIVER_VERSION /opt/nvidia/current/lib64/libEGL.so.1
       ldconfig
 
   - path: /opt/nvidia-build/util/retry.sh
