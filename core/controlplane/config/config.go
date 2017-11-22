@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	k8sVer = "v1.7.8_coreos.1"
+	k8sVer = "v1.8.2_coreos.0"
 
 	credentialsDir = "credentials"
 	userDataDir    = "userdata"
@@ -39,6 +39,9 @@ func NewDefaultCluster() *Cluster {
 	experimental := Experimental{
 		Admission: Admission{
 			PodSecurityPolicy{
+				Enabled: false,
+			},
+			AlwaysPullImages{
 				Enabled: false,
 			},
 			DenyEscalatingExec{
@@ -138,7 +141,7 @@ func NewDefaultCluster() *Cluster {
 			CalicoCniImage:                     model.Image{Repo: "quay.io/calico/cni", Tag: "v1.11.0", RktPullDocker: false},
 			CalicoKubeControllersImage:         model.Image{Repo: "quay.io/calico/kube-controllers", Tag: "v1.0.0", RktPullDocker: false},
 			CalicoCtlImage:                     model.Image{Repo: "quay.io/calico/ctl", Tag: "v1.6.1", RktPullDocker: false},
-			ClusterAutoscalerImage:             model.Image{Repo: "gcr.io/google_containers/cluster-autoscaler", Tag: "v0.6.2", RktPullDocker: false},
+			ClusterAutoscalerImage:             model.Image{Repo: "gcr.io/google_containers/cluster-autoscaler", Tag: "v1.0.2", RktPullDocker: false},
 			ClusterProportionalAutoscalerImage: model.Image{Repo: "gcr.io/google_containers/cluster-proportional-autoscaler-amd64", Tag: "1.1.2", RktPullDocker: false},
 			Kube2IAMImage:                      model.Image{Repo: "jtblin/kube2iam", Tag: "0.8.1", RktPullDocker: false},
 			KubeDnsImage:                       model.Image{Repo: "gcr.io/google_containers/k8s-dns-kube-dns-amd64", Tag: "1.14.6", RktPullDocker: false},
@@ -520,8 +523,13 @@ type Experimental struct {
 
 type Admission struct {
 	PodSecurityPolicy  PodSecurityPolicy  `yaml:"podSecurityPolicy"`
+	AlwaysPullImages   AlwaysPullImages   `yaml:"alwaysPullImages"`
 	DenyEscalatingExec DenyEscalatingExec `yaml:"denyEscalatingExec"`
 	Initializers       Initializers       `yaml:"initializers"`
+}
+
+type AlwaysPullImages struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type PodSecurityPolicy struct {
@@ -1318,7 +1326,7 @@ func (c DeploymentSettings) NATGateways() []model.NATGateway {
 
 func (c DefaultWorkerSettings) Validate() error {
 	if c.WorkerRootVolumeType == "io1" {
-		if c.WorkerRootVolumeIOPS < 100 || c.WorkerRootVolumeIOPS > 2000 {
+		if c.WorkerRootVolumeIOPS < 100 || c.WorkerRootVolumeIOPS > 20000 {
 			return fmt.Errorf("invalid workerRootVolumeIOPS: %d", c.WorkerRootVolumeIOPS)
 		}
 	} else {
@@ -1339,7 +1347,7 @@ func (c ControllerSettings) Validate() error {
 	rootVolume := controller.RootVolume
 
 	if rootVolume.Type == "io1" {
-		if rootVolume.IOPS < 100 || rootVolume.IOPS > 2000 {
+		if rootVolume.IOPS < 100 || rootVolume.IOPS > 20000 {
 			return fmt.Errorf("invalid controller.rootVolume.iops: %d", rootVolume.IOPS)
 		}
 	} else {
