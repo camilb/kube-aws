@@ -1020,7 +1020,7 @@ worker:
 # DNS Masq metrics image repository to use.
 #dnsMasqMetricsImage:
 #  repo: gcr.io/google_containers/k8s-dns-sidecar-amd64
-#  tag: 1.14.6
+#  tag: 1.14.7
 #  rktPullDocker: false
 
 # Exec Healthz image repository to use.
