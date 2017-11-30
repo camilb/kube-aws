@@ -966,19 +966,19 @@ worker:
 # Calico Node image repository to use.
 #calicoNodeImage:
 #  repo: quay.io/calico/node
-#  tag: v2.6.1
+#  tag: v2.6.3
 #  rktPullDocker: false
 
 # Calico CNI image repository to use.
 #calicoCniImage:
 #  repo: quay.io/calico/cni
-#  tag: v1.11.0
+#  tag: v1.11.1
 #  rktPullDocker: false
 
 # Calico Kube Controllers image repository to use.
 #calicoKubeControllersImage:
 #  repo: quay.io/calico/kube-controllers
-#  tag: v1.0.0
+#  tag: v1.0.1
 #  rktPullDocker: false
 
 # Cluster Autoscaler image repository to use.
@@ -1068,7 +1068,7 @@ worker:
 # Calico Controller image repository to use.
 #calicoCtlImage:
 #  repo: calico/ctl
-#  tag: v1.6.1
+#  tag: v1.6.2
 #  rktPullDocker: false
 
 # Pause image repository to use.This works only if you are deploying your cluster in "cn-north-1" region.
