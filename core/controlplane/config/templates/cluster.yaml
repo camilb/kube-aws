@@ -164,6 +164,10 @@ kmsKeyArn: "{{.KMSKeyARN}}"
 #  # CAUTION: Don't use t2.micro or the cluster won't work. See https://github.com/kubernetes/kubernetes/issues/18975
 #  instanceType: t2.medium
 #
+#  # EC2 instance tags for controller nodes
+#  instanceTags:
+#    instanceRole: controller
+#
 #  rootVolume:
 #    # Disk size (GiB) for controller node
 #    size: 30
@@ -343,6 +347,10 @@ worker:
 #      # CAUTION: Don't use t2.micro or the cluster won't work. See https://github.com/kubernetes/kubernetes/issues/16122
 #      instanceType: t2.medium
 #
+#      # EC2 instance tags for worker nodes
+#      instanceTags:
+#        instanceRole: worker
+#
 #      rootVolume:
 #        # Disk size (GiB) for worker nodes
 #        size: 30
@@ -397,7 +405,7 @@ worker:
 #        # IAM role to grant the Spot fleet permission to bid on, launch, and terminate instances on your behalf
 #        # See http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-fleet-requests.html#spot-fleet-prerequisites
 #        #
-#        # Defaults to "arn:aws:iam::youraccountid:role/aws-ec2-spot-fleet-role" assuming you've arrived "Spot Requests" in EC2 Dashboard
+#        # Defaults to "arn:aws:iam::youraccountid:role/aws-ec2-spot-fleet-tagging-role" assuming you've arrived "Spot Requests" in EC2 Dashboard
 #        # hence the role is automatically created for you
 #        iamFleetRoleArn: "arn:aws:iam::youraccountid:role/kube-aws-doesnt-create-this-for-you"
 #
@@ -576,6 +584,10 @@ worker:
 #
 #  # Instance type for etcd node
 #  instanceType: t2.medium
+#
+#  # EC2 instance tags for etcd nodes
+#  instanceTags:
+#    instanceRole: etcd
 #
 #  rootVolume:
 #    # Root volume size (GiB) for etcd node
