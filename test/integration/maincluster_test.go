@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -87,6 +88,9 @@ func TestMainClusterConfig(t *testing.T) {
 					Enabled: false,
 				},
 				DenyEscalatingExec: controlplane_config.DenyEscalatingExec{
+					Enabled: false,
+				},
+				Priority: controlplane_config.Priority{
 					Enabled: false,
 				},
 			},
@@ -405,6 +409,8 @@ addons:
     enabled: true
   clusterAutoscaler:
     enabled: true
+  metricsServer:
+    enabled: true
 worker:
   nodePools:
   - name: pool1
@@ -418,6 +424,9 @@ worker:
 							Enabled: true,
 						},
 						ClusterAutoscaler: model.ClusterAutoscalerSupport{
+							Enabled: true,
+						},
+						MetricsServer: model.MetricsServer{
 							Enabled: true,
 						},
 					}
@@ -511,6 +520,65 @@ apiEndpoints:
 					expected := "0.0.0.0/0"
 					if actual != expected {
 						t.Errorf("unexpected cidr in apiEndpoints[0].loadBalancer.apiAccessAllowedSourceCIDRs[0]. expected = %s, actual = %s", expected, actual)
+					}
+				},
+			},
+		},
+		{
+			context:    "WithKubeProxyIPVSModeDisabledByDefault",
+			configYaml: minimalValidConfigYaml,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					if c.KubeProxy.IPVSMode.Enabled != false {
+						t.Errorf("kube-proxy IPVS mode must be disabled by default")
+					}
+
+					expectedScheduler := "rr"
+					if c.KubeProxy.IPVSMode.Scheduler != expectedScheduler {
+						t.Errorf("IPVS scheduler should be by default set to: %s (actual = %s)", expectedScheduler, c.KubeProxy.IPVSMode.Scheduler)
+					}
+
+					expectedSyncPeriod := "60s"
+					if c.KubeProxy.IPVSMode.SyncPeriod != expectedSyncPeriod {
+						t.Errorf("Sync period should be by default set to: %s (actual = %s)", expectedSyncPeriod, c.KubeProxy.IPVSMode.SyncPeriod)
+					}
+
+					expectedMinSyncPeriod := "10s"
+					if c.KubeProxy.IPVSMode.MinSyncPeriod != expectedMinSyncPeriod {
+						t.Errorf("Minimal sync period should be by default set to: %s (actual = %s)", expectedMinSyncPeriod, c.KubeProxy.IPVSMode.MinSyncPeriod)
+					}
+				},
+			},
+		},
+		{
+			context: "WithKubeProxyIPVSModeEnabled",
+			configYaml: minimalValidConfigYaml + `
+kubeProxy:
+  ipvsMode:
+    enabled: true
+    scheduler: lc
+    syncPeriod: 90s
+    minSyncPeriod: 15s
+`,
+			assertConfig: []ConfigTester{
+				func(c *config.Config, t *testing.T) {
+					if c.KubeProxy.IPVSMode.Enabled != true {
+						t.Errorf("kube-proxy IPVS mode must be enabled")
+					}
+
+					expectedScheduler := "lc"
+					if c.KubeProxy.IPVSMode.Scheduler != expectedScheduler {
+						t.Errorf("IPVS scheduler should be set to: %s (actual = %s)", expectedScheduler, c.KubeProxy.IPVSMode.Scheduler)
+					}
+
+					expectedSyncPeriod := "90s"
+					if c.KubeProxy.IPVSMode.SyncPeriod != expectedSyncPeriod {
+						t.Errorf("Sync period should be set to: %s (actual = %s)", expectedSyncPeriod, c.KubeProxy.IPVSMode.SyncPeriod)
+					}
+
+					expectedMinSyncPeriod := "15s"
+					if c.KubeProxy.IPVSMode.MinSyncPeriod != expectedMinSyncPeriod {
+						t.Errorf("Minimal sync period should be set to: %s (actual = %s)", expectedMinSyncPeriod, c.KubeProxy.IPVSMode.MinSyncPeriod)
 					}
 				},
 			},
@@ -1156,6 +1224,8 @@ experimental:
       enabled: true
     alwaysPullImages:
       enabled: true
+    priority:
+      enabled: true
   auditLog:
     enabled: true
     maxage: 100
@@ -1220,6 +1290,9 @@ worker:
 								Enabled: true,
 							},
 							DenyEscalatingExec: controlplane_config.DenyEscalatingExec{
+								Enabled: true,
+							},
+							Priority: controlplane_config.Priority{
 								Enabled: true,
 							},
 						},
@@ -1292,10 +1365,28 @@ worker:
 					if reflect.DeepEqual(expected, p.Experimental) {
 						t.Errorf("experimental settings shouldn't be inherited to a node pool but it did : toplevel=%v nodepool=%v", expected, p.Experimental)
 					}
+
 				},
 			},
 			assertCluster: []ClusterTester{
 				hasDefaultCluster,
+				func(c root.Cluster, t *testing.T) {
+					cp := c.ControlPlane()
+					controllerUserdataS3Part := cp.UserDataController.Parts[model.USERDATA_S3].Asset.Content
+					if !strings.Contains(controllerUserdataS3Part, `--feature-gates=PodPriority=true`) {
+						t.Error("missing controller feature gate: PodPriority=true")
+					}
+
+					if !strings.Contains(controllerUserdataS3Part, `scheduling.k8s.io/v1alpha1=true`) {
+						t.Error("missing controller runtime config: scheduling.k8s.io/v1alpha1=true")
+					}
+
+					re, _ := regexp.Compile("--admission-control=[a-zA-z,]*,Priority")
+					if len(re.FindString(controllerUserdataS3Part)) == 0 {
+						t.Error("missing controller --admission-control config: Priority")
+					}
+
+				},
 			},
 		},
 		{

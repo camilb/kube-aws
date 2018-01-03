@@ -50,6 +50,9 @@ func NewDefaultCluster() *Cluster {
 			Initializers{
 				Enabled: false,
 			},
+			Priority{
+				Enabled: false,
+			},
 		},
 		AuditLog: AuditLog{
 			Enabled: false,
@@ -106,6 +109,13 @@ func NewDefaultCluster() *Cluster {
 		},
 	}
 
+	ipvsMode := IPVSMode{
+		Enabled:       false,
+		Scheduler:     "rr",
+		SyncPeriod:    "60s",
+		MinSyncPeriod: "10s",
+	}
+
 	return &Cluster{
 		DeploymentSettings: DeploymentSettings{
 			ClusterName:        "kubernetes",
@@ -130,6 +140,9 @@ func NewDefaultCluster() *Cluster {
 					Filter:   `{ $.priority = "CRIT" || $.priority = "WARNING" && $.transport = "journal" && $.systemdUnit = "init.scope" }`,
 					interval: 60,
 				},
+			},
+			KubeProxy: KubeProxy{
+				IPVSMode: ipvsMode,
 			},
 			KubeDns: KubeDns{
 				NodeLocalResolver: false,
@@ -423,6 +436,7 @@ type DeploymentSettings struct {
 	CloudWatchLogging       `yaml:"cloudWatchLogging,omitempty"`
 	AmazonSsmAgent          `yaml:"amazonSsmAgent,omitempty"`
 	CloudFormationStreaming bool `yaml:"cloudFormationStreaming,omitempty"`
+	KubeProxy               `yaml:"kubeProxy,omitempty"`
 	KubeDns                 `yaml:"kubeDns,omitempty"`
 	KubernetesDashboard     `yaml:"kubernetesDashboard,omitempty"`
 	// Images repository
@@ -529,6 +543,7 @@ type Admission struct {
 	AlwaysPullImages   AlwaysPullImages   `yaml:"alwaysPullImages"`
 	DenyEscalatingExec DenyEscalatingExec `yaml:"denyEscalatingExec"`
 	Initializers       Initializers       `yaml:"initializers"`
+	Priority           Priority           `yaml:"priority"`
 }
 
 type AlwaysPullImages struct {
@@ -544,6 +559,10 @@ type DenyEscalatingExec struct {
 }
 
 type Initializers struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+type Priority struct {
 	Enabled bool `yaml:"enabled"`
 }
 
@@ -635,6 +654,17 @@ type TargetGroup struct {
 	Enabled          bool     `yaml:"enabled"`
 	Arns             []string `yaml:"arns"`
 	SecurityGroupIds []string `yaml:"securityGroupIds"`
+}
+
+type KubeProxy struct {
+	IPVSMode IPVSMode `yaml:"ipvsMode"`
+}
+
+type IPVSMode struct {
+	Enabled       bool   `yaml:"enabled"`
+	Scheduler     string `yaml:"scheduler"`
+	SyncPeriod    string `yaml:"syncPeriod"`
+	MinSyncPeriod string `yaml:"minSyncPeriod"`
 }
 
 type KubeDns struct {
